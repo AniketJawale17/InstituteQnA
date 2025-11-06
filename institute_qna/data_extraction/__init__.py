@@ -1,3 +1,3 @@
-from webscrapper import WebBasedLoader
+from .webscrapper import WebBasedLoader
 
 __all__ = ["WebBasedLoader"]

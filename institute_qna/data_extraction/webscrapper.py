@@ -58,8 +58,34 @@ class WebBasedLoader:
 
 	def load_html_markdown_from_url(url: str) -> None:
 		"""Load HTML and Markdown content from a web page URL, then save to JSON file."""
-		loader = WebBaseLoader(url, mode="html+markdown")
+		loader = WebBaseLoader(url) 
 		data = loader.load()
-		# Convert documents to serializable shape and write to file
+		print(data)
+		# Attempt to fetch raw HTML for each document's source URL so we preserve # anchor tags and other elements needed for attachment discovery.
+		for d in data:
+			try:
+				src = getattr(d, "metadata", {}).get("source")
+				# only fetch if source looks like an http URL
+				if src and str(src).startswith("http"):
+					try:
+						r = requests.get(src, headers={"User-Agent": "my-scraper/0.1"}, timeout=20)
+						r.raise_for_status()
+						# keep the original extracted text in metadata for reference
+						try:
+							orig = getattr(d, "page_content", None)
+							if orig:
+								d.metadata["text_extracted"] = orig
+						except Exception:
+							pass
+						# replace page_content with raw HTML so link-finder can work
+						d.page_content = r.text
+					except Exception as e:
+						print(f"Failed to fetch raw HTML for {src}: {e}")
+			except Exception:
+				# ignore documents with unexpected shapes
+				pass
+			
+            # Convert documents to serializable shape and write to file
 		serializable = WebBasedLoader.documents_to_serializable(data)
 		WebBasedLoader.write_json_atomic("extracted_text_data/admissions_data.json", serializable)
+		

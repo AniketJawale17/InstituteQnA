@@ -2,5 +2,6 @@
 
 __version__ = "0.1.0"
 
-def hello():
-    return "Hello from InstituteQnA"
+from .data_extraction import WebBasedLoader
+
+__all__ = ["WebBasedLoader"]
