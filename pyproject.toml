@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "InstituteQnA"
+version = "0.1.0"
+description = "Poetry project for InstituteQnA"
+authors = ["Aniket Jawale <aniketjawale17@gmail.com>"]
+packages = [{ include = "institute_qna" }]
+
+[tool.poetry.dependencies]
+python = "^3.14"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
