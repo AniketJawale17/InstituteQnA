@@ -3,7 +3,12 @@ import json
 import tempfile
 from pathlib import Path
 from typing import Any, Union, Optional
+import logging
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+logger = logging.getLogger(__name__)
 
 
 class WebBasedLoader:
@@ -65,17 +70,25 @@ class WebBasedLoader:
 	@staticmethod
 	def load_html_markdown_from_url(url: str) -> None:
 		"""Load HTML and Markdown content from a web page URL, then save to JSON file."""
-		loader = WebBaseLoader(url) 
+		loader = WebBaseLoader(url)
 		data = loader.load()
-		print(data)
-		# Attempt to fetch raw HTML for each document's source URL so we preserve # anchor tags and other elements needed for attachment discovery.
+		logger.debug("Loaded %d documents from %s", len(data), url)
+
+		# create a requests session with a small retry strategy
+		session = requests.Session()
+		retry_strategy = Retry(total=2, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
+		session.mount("https://", HTTPAdapter(max_retries=retry_strategy))
+		session.mount("http://", HTTPAdapter(max_retries=retry_strategy))
+		session.headers.update({"User-Agent": "institute_qna/0.1"})
+
+		# Attempt to fetch raw HTML for each document's source URL so we preserve anchor tags and other elements needed for attachment discovery.
 		for d in data:
 			try:
 				src = getattr(d, "metadata", {}).get("source")
 				# only fetch if source looks like an http URL
 				if src and str(src).startswith("http"):
 					try:
-						r = requests.get(src, headers={"User-Agent": "my-scraper/0.1"}, timeout=20)
+						r = session.get(src, timeout=20)
 						r.raise_for_status()
 						# keep the original extracted text in metadata for reference
 						try:
@@ -83,15 +96,17 @@ class WebBasedLoader:
 							if orig:
 								d.metadata["text_extracted"] = orig
 						except Exception:
-							pass
+							logger.debug("Could not preserve original extracted text for a document", exc_info=True)
 						# replace page_content with raw HTML so link-finder can work
 						d.page_content = r.text
-					except Exception as e:
-						print(f"Failed to fetch raw HTML for {src}: {e}")
+					except requests.RequestException as e:
+						logger.warning("Failed to fetch raw HTML for %s: %s", src, e, exc_info=True)
 			except Exception:
-				# ignore documents with unexpected shapes
-				pass
-			
-            # Convert documents to serializable shape and write to file
+				# ignore documents with unexpected shapes but log at debug level
+				logger.debug("Unexpected document shape while processing source", exc_info=True)
+
+		# Convert documents to serializable shape and write to file
 		serializable = WebBasedLoader.documents_to_serializable(data)
-		WebBasedLoader.write_json_atomic("extracted_text_data/admissions_data.json", serializable)
+		out_path = "extracted_text_data/admissions_data.json"
+		WebBasedLoader.write_json_atomic(out_path, serializable)
+		logger.info("Wrote %d documents to %s", len(serializable), out_path)
