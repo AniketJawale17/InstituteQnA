@@ -7,16 +7,20 @@ import requests
 
 
 class WebBasedLoader:
+	"""Utility class for loading and processing web-based documents."""
+	
+	@staticmethod
 	def _make_serializable(obj: Any):
 		"""Fallback serializer for non-JSON-serializable objects."""
 		# LangChain Document metadata may contain datetimes or other types; coerce to string
 		try:
 			json.dumps(obj)
 			return obj
-		except Exception:
+		except Exception as e:
 			return str(obj)
 
 
+	@staticmethod
 	def documents_to_serializable(documents):
 		"""Convert a list of LangChain Document objects to plain dicts."""
 		out = []
@@ -39,6 +43,7 @@ class WebBasedLoader:
 		return out
 
 
+	@staticmethod
 	def write_json_atomic(path: Union[str, Path], data_obj, *, indent: Optional[int] = 2, ensure_ascii: bool = False):
 		path = Path(path)
 		path.parent.mkdir(parents=True, exist_ok=True)
@@ -48,6 +53,7 @@ class WebBasedLoader:
 		Path(tmp.name).replace(path)
 
 
+	@staticmethod
 	def load_clean_text_from_url(url: str) -> None:
 		"""Load and extract text from a web page URL, then save to JSON file."""
 		loader = WebBaseLoader(url)
@@ -56,6 +62,7 @@ class WebBasedLoader:
 		serializable = WebBasedLoader.documents_to_serializable(data)
 		WebBasedLoader.write_json_atomic("extracted_text_data/admissions_data.json", serializable)
 
+	@staticmethod
 	def load_html_markdown_from_url(url: str) -> None:
 		"""Load HTML and Markdown content from a web page URL, then save to JSON file."""
 		loader = WebBaseLoader(url) 
@@ -88,4 +95,3 @@ class WebBasedLoader:
             # Convert documents to serializable shape and write to file
 		serializable = WebBasedLoader.documents_to_serializable(data)
 		WebBasedLoader.write_json_atomic("extracted_text_data/admissions_data.json", serializable)
-		
