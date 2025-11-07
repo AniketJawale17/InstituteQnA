@@ -9,6 +9,7 @@ import logging
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from markdownify import markdownify as md
 
 logger = logging.getLogger(__name__)
 
@@ -101,13 +102,15 @@ class WebBasedLoader:
 							logger.debug("Could not preserve original extracted text for a document", exc_info=True)
 						# replace page_content with raw HTML so link-finder can work
 						d.page_content = r.text
+						d.metadata["markdowntext"] = md(r.text)
 					except requests.RequestException as e:
 						logger.warning("Failed to fetch raw HTML for %s: %s", src, e, exc_info=True)
 			except Exception:
 				# ignore documents with unexpected shapes but log at debug level
 				logger.debug("Unexpected document shape while processing source", exc_info=True)
-
+		
 		# Convert documents to serializable shape and write to file
+		print(data)
 		serializable = WebBasedLoader.documents_to_serializable(data)
 		out_path = "extracted_text_data/admissions_data.json"
 		WebBasedLoader.write_json_atomic(out_path, serializable)

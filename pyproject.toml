@@ -110,6 +110,7 @@ yarl = "1.22.0"
 zstandard = "0.25.0"
 fastapi = "^0.121.0"
 uvicorn = "^0.38.0"
+markdownify = "^1.2.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0"
