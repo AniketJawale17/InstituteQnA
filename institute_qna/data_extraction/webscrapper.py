@@ -1,3 +1,5 @@
+"""Website Scrapping functionalities"""
+
 from langchain_community.document_loaders import WebBaseLoader
 import json
 import tempfile

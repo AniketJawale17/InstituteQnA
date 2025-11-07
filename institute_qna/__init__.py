@@ -2,6 +2,10 @@
 
 __version__ = "0.1.0"
 
-from .data_extraction import WebBasedLoader
-
-__all__ = ["WebBasedLoader"]
+from .data_extraction import WebBasedLoader, AttachmentDownloader
+# from logging_config import configure_logging
+__all__ = [
+    "WebBasedLoader", 
+    "AttachmentDownloader",
+    "configure_logging"
+]

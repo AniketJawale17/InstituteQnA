@@ -1,3 +1,8 @@
 from .webscrapper import WebBasedLoader
-
-__all__ = ["WebBasedLoader"]
+from .download_attachment import AttachmentDownloader
+from dotenv import load_dotenv
+load_dotenv()
+__all__ = [
+    "WebBasedLoader", 
+    "AttachmentDownloader"
+]
