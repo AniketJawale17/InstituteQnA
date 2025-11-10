@@ -110,7 +110,6 @@ class WebBasedLoader:
 				logger.debug("Unexpected document shape while processing source", exc_info=True)
 		
 		# Convert documents to serializable shape and write to file
-		print(data)
 		serializable = WebBasedLoader.documents_to_serializable(data)
 		out_path = "extracted_text_data/admissions_data.json"
 		WebBasedLoader.write_json_atomic(out_path, serializable)
