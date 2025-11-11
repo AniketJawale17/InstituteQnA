@@ -5,7 +5,9 @@ import os
 import uvicorn
 from dotenv import load_dotenv
 from institute_qna import WebBasedLoader
+from institute_qna.data_preprocess.extract_pdf_text import PDFTextExtractor
 from institute_qna.logging_config import configure_logging
+import pandas as pd
 
 load_dotenv()
 
@@ -32,6 +34,8 @@ async def system_status() -> dict:
     return {
         "Status": "Up and Running"
     }
+
+
 @app.post("/Extract")
 
 async def extract() -> dict:
@@ -46,6 +50,26 @@ async def extract() -> dict:
         logger.exception("Unexpected error occurred while extracting data",e)
         # Re-raise so FastAPI returns a 500 response (or you can return a custom response)
         return {"Error" : str(e)}
+    
+
+@app.post("/Process")
+async def process(pdf_path_folder : str) -> dict:
+    try:
+        # Call the PDF text extraction method
+        extracted_text = []
+        for pdf_file in os.listdir(pdf_path_folder):
+            if pdf_file.endswith(".pdf"):
+                pdf_path = os.path.join(pdf_path_folder, pdf_file)
+                extracted_text += PDFTextExtractor.extract_text_from_text_pdf(pdf_path)
+                logger.info("Extracted text from text-based PDF: %s", pdf_file)
+        df = pd.DataFrame([docs.page_content for docs in extracted_text], columns=["Extracted_Text"])
+        df.to_csv("extracted_text_data/extracted_pdf_text.csv", index=False)
+        logger.info("Saved extracted text to CSV file")
+        return {"Status": "Success", "Data": extracted_text}
+    except Exception as e:
+        logger.exception("Unexpected error occurred while processing PDF", e)
+        return {"Error": str(e)}
+
 
 if __name__ == "__main__":
-    uvicorn.run("app:app",reload=False,workers=4,port = 8005,host = "0.0.0.0")
+    uvicorn.run("app:app", reload=False, workers=4, port=8005, host="0.0.0.0")
