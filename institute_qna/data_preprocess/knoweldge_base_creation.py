@@ -1,5 +1,11 @@
+"""Knowledge Base Creation Module.
+This module structures extracted text from PDFs and websites into a format suitable for knowledge base creation."""
+
 from institute_qna.data_preprocess.extract_pdf_text import PDFTextExtractor
-from langchain_core.documents import Document
+import json
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document 
+from pathlib import Path
 import pandas as pd
 
 class KnowledgeBaseCreation(PDFTextExtractor):
@@ -14,30 +20,49 @@ class KnowledgeBaseCreation(PDFTextExtractor):
         structured = []
         for doc in extracted_docs:
             content = doc.page_content
-            metadata = doc.metadata['source'] if 'source' in doc.metadata else {}
+            source = doc.metadata['source'] if 'source' in doc.metadata else {}
             page = doc.metadata['page'] if 'page' in doc.metadata else None
             page_label = doc.metadata['page_label'] if 'page_label' in doc.metadata else None
-            structured.append({"content": content, "metadata": metadata, "page": page, "page_label": page_label})
+            structured.append({"content": content, "source": source, "page": str(page), "page_label": page_label})
         return structured
 
-    def website_structure_documents(self, extracted_docs = []) -> list:
+    def website_structure_documents(self, webdata_file_name: str) -> list:
         """Structure extracted text from website into a list of dictionaries with 'content' and 'metadata'."""
-        structured = []
-        for doc in extracted_docs:
-            content = doc.page_content
-            metadata = doc.metadata['source'] if 'source' in doc.metadata else {}
-            structured.append({"content": content, "metadata": metadata})
+        json_path = Path(webdata_file_name)
+
+        with open(json_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+
+        pages = []
+        for doc in raw:
+            content = doc['metadata']['markdowntext']
+            source = doc['metadata']['source'] if 'metadata' in doc and 'source' in doc['metadata'] else {}
+            title = doc['metadata']['title'] if 'metadata' in doc and 'title' in doc['metadata'] else None
+            pages.append(Document(page_content=content, metadata={"source": source, "page": title, "page_label": 1000}))
+
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
+            length_function=len,
+            separators=["\n\n", "\n", ".", " ", ""],
+        )
+
+        # The final output variable is `docs` for downstream steps
+        docs = splitter.split_documents(pages)
+
+        structured = self.structure_documents(docs)
         return structured
 
 def main():
     obj = KnowledgeBaseCreation()
     extracted_docs = obj.extract_multiple_pdfs("attachments/")
     structured_docs = obj.structure_documents(extracted_docs)
-    return structured_docs
+    web_structured_docs = obj.website_structure_documents("extracted_text_data/admissions_data.json")
+    return  web_structured_docs + structured_docs
 
-# if __name__ == "__main__":
-#     structured_docs = main()
-#     print(f"Structured {len(structured_docs)} documents for knowledge base.")
-#     df = pd.DataFrame(structured_docs)
-#     print(df.head())
-#     df.to_csv("extracted_text_data/extracted_pdf_text.csv", index=False)
+if __name__ == "__main__":
+    structured_docs = main()
+    print(f"Structured {len(structured_docs)} documents for knowledge base.")
+    df = pd.DataFrame(structured_docs)
+    print(df.head())
+    df.to_csv("extracted_text_data/extracted_pdf_text.csv", index=False)

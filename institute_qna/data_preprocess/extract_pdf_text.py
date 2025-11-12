@@ -2,7 +2,7 @@
 from langchain_community.document_loaders import PyPDFLoader,UnstructuredPDFLoader
 from pathlib import Path
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-
+# from multiprocessing import Pool
 from langchain_core.documents import Document
 
 class PDFTextExtractor:
@@ -60,6 +60,8 @@ class PDFTextExtractor:
             """
             all_chunks = []
             pdf_paths = list(Path(pdf_folder_path).glob("*.pdf"))
+            # multiprocessing_pool = Pool(processes=4)
+            # all_chunks = multiprocessing_pool.map(self.extract_text_from_text_pdf, pdf_paths)
             for pdf_path in pdf_paths:
                 self.pdf_path = pdf_path
                 chunks = self.extract_text_from_text_pdf()
