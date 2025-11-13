@@ -4,9 +4,9 @@ __pycache__/
 .pytest_cache/
 .env
 .vscode/
-.DS_Store
 DS_Store
 scratchnotebook.ipynb
 extracted_text_data/
 logs/
 attachments/
+.DS_Store
