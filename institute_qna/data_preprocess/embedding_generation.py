@@ -1,10 +1,9 @@
+"""This module contains the Embeddings Generation class and methods"""
+
 from langchain_openai import AzureOpenAIEmbeddings
-from langchain_core.vectorstores import InMemoryVectorStore
+from langchain_chroma import Chroma
 import getpass
 import os
-# from dotenv import load_dotenv
-# load_dotenv()
-
 
 class EmbeddingsGeneration:
     """ Embedding Generation Class"""
@@ -18,8 +17,8 @@ class EmbeddingsGeneration:
 
     def openai_embeddings_generation(
             self,
+            docs,
             model: str = "text-embedding-3-small",
-            text:str = ""
         ):
         """Generates OpenAI Embeddings based on the model and text for inputs
 
@@ -28,22 +27,31 @@ class EmbeddingsGeneration:
             text (str, optional): _description_. Defaults to "".
         """
 
-        if not isinstance(text,list):
-            text = [text]
+        if not isinstance(docs,list):
+            docs = [docs]
 
         # OpenAI Embedding model
         embeddings = AzureOpenAIEmbeddings(
             model=model,
         )
 
-        # In Memory Vector Store Generation
-        vectorstore = InMemoryVectorStore.from_texts(
-            text,
-            embedding=embeddings,
+
+        self.vector_store = Chroma(
+            collection_name="UG_admission_data",
+            embedding_function=embeddings,
+            persist_directory="./ug_admission_data",  # Where to save data locally, remove if not necessary
         )
+        self.vector_store.add_documents(documents=docs)
 
-        return vectorstore
-
+        return self.vector_store
+    
+    def add_documents(self, docs: list):
+        """Add documents to the existing vector store."""
+        if not hasattr(self, 'vector_store'):
+            raise ValueError("Vector store not initialized. Please run openai_embeddings_generation first.")
+        
+        self.vector_store.add_documents(documents=docs)
+        return self.vector_store
 
 
 

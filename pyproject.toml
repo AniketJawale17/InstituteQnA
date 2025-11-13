@@ -123,6 +123,7 @@ pdfminer-six = "^20251107"
 pi-heif = "^1.1.1"
 unstructured-inference = "^1.1.1"
 unstructured-pytesseract = "^0.3.15"
+langchain-chroma = "^1.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0"
