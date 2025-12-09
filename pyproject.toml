@@ -121,6 +121,7 @@ pdfminer = "^20191125"
 pdfminer-six = "^20251107"
 pi-heif = "^1.1.1"
 langchain-chroma = "^1.0.0"
+pandas = "^2.3.3"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0"
