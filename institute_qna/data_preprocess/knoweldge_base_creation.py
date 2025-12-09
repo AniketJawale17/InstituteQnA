@@ -4,6 +4,7 @@ This module structures extracted text from PDFs and websites into a format suita
 from institute_qna.data_preprocess.extract_pdf_text import PDFTextExtractor
 import json
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from institute_qna.data_preprocess.embedding_generation import EmbeddingsGeneration
 from langchain_core.documents import Document 
 from pathlib import Path
 import pandas as pd
@@ -59,11 +60,11 @@ class KnowledgeBaseCreation(PDFTextExtractor):
 
 def main():
     obj = KnowledgeBaseCreation()
-    # extracted_docs = obj.extract_multiple_pdfs("attachments/")
-    # structured_docs = obj.structure_documents(extracted_docs)
+    extracted_docs = obj.extract_multiple_pdfs("attachments/")
+    structured_docs = obj.structure_documents(extracted_docs)
     web_structured_docs = obj.website_structure_documents("extracted_text_data/admissions_data.json")
-    # return  web_structured_docs + structured_docs
-    return web_structured_docs
+    return  web_structured_docs + structured_docs
+    # return web_structured_docs
 
 if __name__ == "__main__":
     structured_docs = main()
@@ -72,29 +73,39 @@ if __name__ == "__main__":
     print("Length of structured docs:", len(structured_docs))
     print("_________________________________________________________")
 
-    from institute_qna.data_preprocess.embedding_generation import EmbeddingsGeneration
-    embed_gen =  EmbeddingsGeneration() 
+    print(structured_docs[0])
 
-    k = 70  # Number of documents to process in each batch
-    if len(structured_docs) < k:
-        k = len(structured_docs)
-    vector_store = embed_gen.openai_embeddings_generation(
-            docs = structured_docs[:k]
-    )
-    sleep(60)
+
+
+    ## Embedding Generation and Vector Store Creation
+    # embed_gen =  EmbeddingsGeneration() 
+
+    # k = 70  # Number of documents to process in each batch
+    # if len(structured_docs) < k:
+    #     k = len(structured_docs)
+    # vector_store = embed_gen.openai_embeddings_generation(
+    #         docs = structured_docs[:k]
+    # )
+    # sleep(60)
 
     
-    if len(structured_docs) > k:
-        print("Adding more documents to the vector store...")
-        for i in range(1, (len(structured_docs) - k)//k):
-            new_docs = structured_docs[i*k : (i+1)*k]
-            embed_gen.add_documents(new_docs)
-            sleep(60)
-            if i >4:
-                break
+    # if len(structured_docs) > k:
+    #     print("Adding more documents to the vector store...")
+    #     for i in range(1, (len(structured_docs) - k)//k):
+
+    #         # For last batch
+    #         if (i*k) >= len(structured_docs):
+    #             embed_gen.add_documents(structured_docs[i*k:])
+    #             break
+
+    #         new_docs = structured_docs[i*k : (i+1)*k]
+    #         embed_gen.add_documents(new_docs)
+    #         sleep(60)
+    #         # if i >4:
+    #         #     break
 
 
-    print(f"Structured {len(structured_docs)} documents for knowledge base.")
-    df = pd.DataFrame(structured_docs)
-    print(df.head())
-    df.to_csv("extracted_text_data/extracted_pdf_text.csv", index=False)
+    # print(f"Structured {len(structured_docs)} documents for knowledge base.")
+    # df = pd.DataFrame(structured_docs)
+    # print(df.head())
+    # df.to_csv("extracted_text_data/extracted_pdf_text.csv", index=False)

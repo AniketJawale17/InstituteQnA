@@ -44,6 +44,7 @@ async def extract() -> dict:
         url = "https://www.coeptech.ac.in/admissions/undergraduate/"
         WebBasedLoader.load_html_markdown_from_url(url)
         logger.info("Generated admission data json in extracted text data")
+        
         return {"Status": "Success"}
     except Exception as e:
         # Log full stack and return a 500-like message

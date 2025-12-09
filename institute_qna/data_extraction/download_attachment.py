@@ -242,7 +242,9 @@ class AttachmentDownloader:
 
 
 
-# json_path = Path(__file__).resolve().parent / "extracted_text_data" / "admissions_data.json"
+json_path = Path(__file__).resolve().parent.parent.parent / "extracted_text_data" / "admissions_data.json"
+
+AttachmentDownloader().download_all_attachments(json_path)
 
 
 
