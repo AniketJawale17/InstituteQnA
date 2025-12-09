@@ -1,5 +1,5 @@
 
-from langchain_community.document_loaders import PyPDFLoader,UnstructuredPDFLoader
+from langchain_community.document_loaders import PyPDFLoader    #,UnstructuredPDFLoader
 from pathlib import Path
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 # from multiprocessing import Pool
@@ -80,6 +80,7 @@ class PDFTextExtractor:
 
             text_pages: list[str] = []
             try:
+                from langchain_community.document_loaders import UnstructuredPDFLoader
                 loader = UnstructuredPDFLoader(str(path))
                 pages = loader.load()
             except Exception as e:
