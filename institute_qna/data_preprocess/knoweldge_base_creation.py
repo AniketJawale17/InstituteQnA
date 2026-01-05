@@ -2,17 +2,30 @@
 
 This module structures extracted text from PDFs and websites into a format 
 suitable for knowledge base creation and vector embedding.
+
+Complete Pipeline:
+1. Web scraping (data extraction)
+2. Attachment downloading (PDFs, docs)
+3. Document processing and cleaning
+4. Chunking and deduplication
+5. Checkpointing at each step
+6. Embedding generation
 """
 
 from institute_qna.data_preprocess.extract_pdf_text import PDFTextExtractor
+from institute_qna.data_extraction.webscrapper import WebBasedLoader
+from institute_qna.data_extraction.download_attachment import AttachmentDownloader
 import json
+import re
+import hashlib
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from institute_qna.data_preprocess.embedding_generation import EmbeddingsGeneration
 from langchain_core.documents import Document 
 from pathlib import Path
-from typing import List
+from typing import List, Set, Optional
 import logging
 from time import sleep
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -24,12 +37,105 @@ class KnowledgeBaseCreation(PDFTextExtractor):
     
     This class processes both PDF documents and web-scraped data, structuring
     them into a unified format suitable for embedding and retrieval.
+    
+    Includes checkpoint saving at each step to prevent data loss.
     """
     
-    def __init__(self):
-        """Initialize the Knowledge Base Creation class."""
+    # Common UI patterns to remove from markdown content
+    NOISE_PATTERNS = [
+        r'\[.*?Login.*?\]\(.*?\)',  # Login links
+        r'Accessibility Tools',
+        r'\* Invert colors.*?Letter spacing\s+100%',  # Accessibility menu
+        r'Search\s+Search',
+        r'\[-A\].*?\[\+A\]',  # Font size controls
+        r'Menu\n',
+        r'Skip to content',
+        r'Copyright.*?All rights reserved.*',
+        r'Best Viewed in.*?\d+ x \d+.*',
+        r'\d+\n\d+\n\d+\n\d+ Visitors',  # Visitor counter
+    ]
+    
+    def __init__(self, checkpoint_dir: str = "extracted_text_data/checkpoints"):
+        """Initialize the Knowledge Base Creation class.
+        
+        Args:
+            checkpoint_dir: Directory to save checkpoint files
+        """
         super().__init__()
         self.structured_documents: List[Document] = []
+        self._seen_content_hashes: Set[str] = set()
+        self.checkpoint_dir = Path(checkpoint_dir)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Checkpoint directory: {self.checkpoint_dir}")
+    
+    def save_checkpoint(self, data: any, step_name: str, timestamp: Optional[str] = None) -> Path:
+        """Save checkpoint data to prevent data loss.
+        
+        Args:
+            data: Data to save (list, dict, etc.)
+            step_name: Name of the processing step
+            timestamp: Optional timestamp string, defaults to current time
+            
+        Returns:
+            Path to saved checkpoint file
+        """
+        if timestamp is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        checkpoint_file = self.checkpoint_dir / f"{step_name}_{timestamp}.json"
+        
+        try:
+            # Convert Documents to serializable format if needed
+            if isinstance(data, list) and data and isinstance(data[0], Document):
+                serializable_data = [
+                    {
+                        "page_content": doc.page_content,
+                        "metadata": doc.metadata
+                    }
+                    for doc in data
+                ]
+            else:
+                serializable_data = data
+            
+            with open(checkpoint_file, 'w', encoding='utf-8') as f:
+                json.dump(serializable_data, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"✅ Checkpoint saved: {checkpoint_file} ({len(data) if isinstance(data, list) else 'N/A'} items)")
+            return checkpoint_file
+        except Exception as e:
+            logger.error(f"Failed to save checkpoint {step_name}: {e}")
+            raise
+    
+    def load_checkpoint(self, checkpoint_file: Path, as_documents: bool = False) -> any:
+        """Load data from checkpoint file.
+        
+        Args:
+            checkpoint_file: Path to checkpoint file
+            as_documents: If True, convert data back to Document objects
+            
+        Returns:
+            Loaded data
+        """
+        try:
+            with open(checkpoint_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            if as_documents and isinstance(data, list):
+                documents = [
+                    Document(
+                        page_content=item.get('page_content', ''),
+                        metadata=item.get('metadata', {})
+                    )
+                    for item in data
+                ]
+                logger.info(f"Loaded {len(documents)} documents from checkpoint")
+                return documents
+            
+            logger.info(f"Loaded checkpoint from {checkpoint_file}")
+            return data
+        except Exception as e:
+            logger.error(f"Failed to load checkpoint {checkpoint_file}: {e}")
+            raise
 
     def structure_documents(self, extracted_docs: List[Document]) -> List[Document]:
         """Structure extracted text into properly formatted Documents.
@@ -56,7 +162,6 @@ class KnowledgeBaseCreation(PDFTextExtractor):
                 
                 structured.append(
                     Document(
-                        id=idx,
                         page_content=content,
                         metadata={
                             "source": source,
@@ -71,6 +176,140 @@ class KnowledgeBaseCreation(PDFTextExtractor):
         
         logger.info(f"Successfully structured {len(structured)} documents")
         return structured
+    
+    def clean_markdown_content(self, content: str) -> str:
+        """Clean markdown content by removing navigation, UI elements, and noise.
+        
+        Args:
+            content: Raw markdown text from web scraping
+            
+        Returns:
+            Cleaned markdown content focused on actual information
+        """
+        # Remove common noise patterns
+        cleaned = content
+        for pattern in self.NOISE_PATTERNS:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+        
+        # Remove excessive navigation menus (keep only first occurrence)
+        lines = cleaned.split('\n')
+        seen_lines = {}
+        filtered_lines = []
+        
+        for line in lines:
+            # Skip empty lines in deduplication but keep them in output
+            if not line.strip():
+                filtered_lines.append(line)
+                continue
+                
+            # For navigation-like lines, only keep first occurrence
+            if line.strip().startswith('*') or line.strip().startswith('-'):
+                line_hash = hashlib.md5(line.encode()).hexdigest()
+                if line_hash in seen_lines:
+                    continue
+                seen_lines[line_hash] = True
+            
+            filtered_lines.append(line)
+        
+        cleaned = '\n'.join(filtered_lines)
+        
+        # Remove long OAuth/redirect URLs
+        cleaned = re.sub(r'https?://[^\s\)]{200,}', '[URL]', cleaned)
+        
+        # Remove multiple consecutive blank lines
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        
+        return cleaned.strip()
+    
+    def classify_document_type(self, content: str, source: str, title: str) -> str:
+        """Classify document type based on content and metadata.
+        
+        Args:
+            content: Document content
+            source: Source URL or file path
+            title: Document title
+            
+        Returns:
+            Document type classification
+        """
+        content_lower = content.lower()
+        source_lower = source.lower()
+        title_lower = title.lower() if title else ''
+        
+        if any(term in content_lower or term in source_lower or term in title_lower 
+               for term in ['fee', 'fees', 'payment', 'tuition']):
+            return 'fees'
+        elif any(term in content_lower or term in source_lower 
+                 for term in ['admission', 'apply', 'eligibility', 'entrance']):
+            return 'admissions'
+        elif any(term in source_lower for term in ['brochure', 'flyer']):
+            return 'brochure'
+        elif any(term in content_lower for term in ['contact', 'email', 'phone', 'address']):
+            return 'contact'
+        elif any(term in content_lower for term in ['program', 'course', 'curriculum', 'b.tech', 'm.tech']):
+            return 'programs'
+        elif any(term in content_lower for term in ['manual', 'guide', 'instruction']):
+            return 'manual'
+        else:
+            return 'general'
+    
+    def extract_metadata_from_content(self, content: str) -> dict:
+        """Extract structured metadata from content.
+        
+        Args:
+            content: Document content
+            
+        Returns:
+            Dictionary with extracted metadata
+        """
+        metadata = {}
+        
+        # Extract dates
+        date_patterns = [
+            r'\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b',
+            r'\b((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? \d{4})\b',
+        ]
+        dates = []
+        for pattern in date_patterns:
+            dates.extend(re.findall(pattern, content, re.IGNORECASE))
+        if dates:
+            metadata['dates'] = list(set(dates[:5]))
+        
+        # Extract emails
+        emails = re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', content)
+        if emails:
+            metadata['emails'] = list(set(emails[:3]))
+        
+        # Extract phone numbers
+        phones = re.findall(r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b|\b\d{10}\b', content)
+        if phones:
+            metadata['phones'] = list(set(phones[:3]))
+        
+        return metadata
+    
+    def deduplicate_chunks(self, chunks: List[Document]) -> List[Document]:
+        """Remove duplicate or near-duplicate chunks.
+        
+        Args:
+            chunks: List of document chunks
+            
+        Returns:
+            Deduplicated list of chunks
+        """
+        unique_chunks = []
+        
+        for chunk in chunks:
+            normalized = re.sub(r'\s+', ' ', chunk.page_content.lower().strip())
+            content_hash = hashlib.md5(normalized.encode()).hexdigest()
+            
+            if content_hash not in self._seen_content_hashes:
+                self._seen_content_hashes.add(content_hash)
+                unique_chunks.append(chunk)
+            else:
+                logger.debug(f"Skipping duplicate chunk from {chunk.metadata.get('source', 'unknown')}")
+        
+        logger.info(f"Deduplicated {len(chunks)} chunks to {len(unique_chunks)} unique chunks")
+        return unique_chunks
 
     def website_structure_documents(self, webdata_file_name: str) -> List[Document]:
         """Structure extracted text from website into properly formatted Documents.
@@ -109,9 +348,23 @@ class KnowledgeBaseCreation(PDFTextExtractor):
         pages = []
         for idx, doc in enumerate(raw):
             try:
-                content = doc.get('metadata', {}).get('markdowntext', '')
+                raw_content = doc.get('metadata', {}).get('markdowntext', '')
                 source = doc.get('metadata', {}).get('source', 'unknown')
-                title = doc.get('metadata', {}).get('title')
+                title = doc.get('metadata', {}).get('title', '')
+                
+                # Clean the markdown content
+                cleaned_content = self.clean_markdown_content(raw_content)
+                
+                # Skip if content is too short after cleaning
+                if len(cleaned_content.strip()) < 100:
+                    logger.warning(f"Skipping document {idx} - too short after cleaning")
+                    continue
+                
+                # Classify document type
+                doc_type = self.classify_document_type(cleaned_content, source, title)
+                
+                # Extract additional metadata
+                extracted_metadata = self.extract_metadata_from_content(cleaned_content)
                 
                 # Use offset to differentiate web docs from PDF docs
                 doc_id = idx + 5000
@@ -119,11 +372,14 @@ class KnowledgeBaseCreation(PDFTextExtractor):
                 pages.append(
                     Document(
                         id=doc_id,
-                        page_content=content,
+                        page_content=cleaned_content,
                         metadata={
                             "source": source,
+                            "title": title,
                             "page": title,
-                            "page_label": 1000
+                            "page_label": 1000,
+                            "doc_type": doc_type,
+                            **extracted_metadata
                         }
                     )
                 )
@@ -131,18 +387,22 @@ class KnowledgeBaseCreation(PDFTextExtractor):
                 logger.warning(f"Failed to process web document {idx}: {e}")
                 continue
 
-        logger.info(f"Loaded {len(pages)} pages from website data")
+        logger.info(f"Loaded {len(pages)} pages from website data (after cleaning)")
         
-        # Split web pages into chunks
+        # Split web pages into chunks with markdown-aware separators
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=self.chunk_size,
             chunk_overlap=self.chunk_overlap,
             length_function=len,
-            separators=["\n\n", "\n", ".", " ", ""],
+            # Markdown-aware separators - preserve structure
+            separators=["\n## ", "\n### ", "\n#### ", "\n\n", "\n", ". ", " ", ""],
         )
 
         docs = splitter.split_documents(pages)
-        logger.info(f"Split web data into {len(docs)} chunks")
+        logger.info(f"Split web data into {len(docs)} chunks (before deduplication)")
+        
+        # Deduplicate chunks
+        docs = self.deduplicate_chunks(docs)
 
         structured = self.structure_documents(docs)
         return structured
@@ -151,37 +411,159 @@ class KnowledgeBaseCreation(PDFTextExtractor):
 def main() -> List[Document]:
     """Main function to process all documents and create knowledge base.
     
+    Complete pipeline with checkpointing:
+    1. Web scraping
+    2. Attachment downloading
+    3. PDF processing
+    4. Web data processing
+    5. Combining and final save
+    
     Returns:
         List of all structured documents (web + PDF)
     """
-    logger.info("Starting knowledge base creation...")
+    logger.info("="*80)
+    logger.info("STARTING COMPLETE KNOWLEDGE BASE CREATION PIPELINE")
+    logger.info("="*80)
     
     obj = KnowledgeBaseCreation()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    # Process PDF documents
+    # ========== STEP 1: WEB SCRAPING ==========
+    logger.info("\n" + "="*80)
+    logger.info("STEP 1: WEB SCRAPING")
+    logger.info("="*80)
+    
+    urls_to_scrape = [
+        "https://www.coeptech.ac.in/admissions/undergraduate/",
+        # "https://www.coeptech.ac.in/about-us/about-university/",
+        # "https://www.coeptech.ac.in/hostel/hostel-admissions/",
+        # "https://www.coeptech.ac.in/hostel/rules-and-regulations/",
+        # "https://www.coeptech.ac.in/student-corner/student-services/student-helpline/",
+        # "https://www.coeptech.ac.in/student-corner/student-clubs/",
+        # "https://www.coeptech.ac.in/facilities/facilities-manager/facilities-for-differently-abled-individuals/",
+        # "https://www.coeptech.ac.in/useful-links/university-sections/"
+    ]
+    
     try:
-        logger.info("Processing PDF documents...")
+        logger.info(f"Scraping {len(urls_to_scrape)} URLs...")
+        for idx, url in enumerate(urls_to_scrape):
+            logger.info(f"  [{idx}/{len(urls_to_scrape)}] {url}")
+            WebBasedLoader.load_html_markdown_from_url(url)
+            if idx < len(urls_to_scrape):
+                sleep(2)  # Be respectful to the server
+        
+        # Save web scraping checkpoint
+        web_data_path = Path("extracted_text_data/admissions_data.json")
+        if web_data_path.exists():
+            with open(web_data_path, 'r', encoding='utf-8') as f:
+                web_data = json.load(f)
+            obj.save_checkpoint(web_data, "01_web_scraping", timestamp)
+            logger.info(f"✅ Web scraping complete: {len(web_data)} pages extracted")
+        else:
+            logger.warning("Web scraping completed but admissions_data.json not found")
+            web_data = []
+    except Exception as e:
+        logger.error(f"Failed to scrape websites: {e}")
+        web_data = []
+    
+    # ========== STEP 2: DOWNLOAD ATTACHMENTS ==========
+    logger.info("\n" + "="*80)
+    logger.info("STEP 2: DOWNLOADING ATTACHMENTS")
+    logger.info("="*80)
+    
+    try:
+        json_path = Path("extracted_text_data/admissions_data.json")
+        if json_path.exists():
+            logger.info("Scanning web data for downloadable attachments...")
+            downloader = AttachmentDownloader()
+            downloader.download_all_attachments(json_path)
+            
+            # Reload and checkpoint the updated JSON with attachment metadata
+            with open(json_path, 'r', encoding='utf-8') as f:
+                web_data_with_attachments = json.load(f)
+            obj.save_checkpoint(web_data_with_attachments, "02_attachments_downloaded", timestamp)
+            logger.info("✅ Attachment downloading complete")
+        else:
+            logger.warning("Cannot download attachments - admissions_data.json not found")
+    except Exception as e:
+        logger.error(f"Failed to download attachments: {e}")
+    
+    # ========== STEP 3: PROCESS PDF DOCUMENTS ==========
+    logger.info("\n" + "="*80)
+    logger.info("STEP 3: PROCESSING PDF DOCUMENTS")
+    logger.info("="*80)
+    
+    try:
+        logger.info("Extracting text from PDFs in attachments/ directory...")
         extracted_docs = obj.extract_multiple_pdfs("attachments/")
-        structured_docs = obj.structure_documents(extracted_docs)
-        logger.info(f"Processed {len(structured_docs)} PDF documents")
+        
+        # Save raw extracted PDF documents
+        obj.save_checkpoint(extracted_docs, "03_pdf_extraction_raw", timestamp)
+        
+        # Structure PDF documents
+        structured_pdf_docs = obj.structure_documents(extracted_docs)
+        obj.save_checkpoint(structured_pdf_docs, "04_pdf_structured", timestamp)
+        
+        logger.info(f"✅ PDF processing complete: {len(structured_pdf_docs)} documents")
     except Exception as e:
         logger.error(f"Failed to process PDFs: {e}")
-        structured_docs = []
+        structured_pdf_docs = []
     
-    # Process website data
+    # ========== STEP 4: PROCESS WEBSITE DATA ==========
+    logger.info("\n" + "="*80)
+    logger.info("STEP 4: PROCESSING WEBSITE DATA")
+    logger.info("="*80)
+    
     try:
-        logger.info("Processing website data...")
+        logger.info("Cleaning and structuring web data...")
         web_structured_docs = obj.website_structure_documents(
             "extracted_text_data/admissions_data.json"
         )
-        logger.info(f"Processed {len(web_structured_docs)} web documents")
+        obj.save_checkpoint(web_structured_docs, "05_web_structured", timestamp)
+        logger.info(f"✅ Web data processing complete: {len(web_structured_docs)} documents")
     except Exception as e:
         logger.error(f"Failed to process web data: {e}")
         web_structured_docs = []
     
-    # Combine all documents
-    all_docs = web_structured_docs + structured_docs
-    logger.info(f"Total documents in knowledge base: {len(all_docs)}")
+    # ========== STEP 5: COMBINE ALL DOCUMENTS ==========
+    logger.info("\n" + "="*80)
+    logger.info("STEP 5: COMBINING ALL DOCUMENTS")
+    logger.info("="*80)
+    
+    all_docs = web_structured_docs + structured_pdf_docs
+    logger.info(f"Total documents: {len(all_docs)}")
+    logger.info(f"  - Web documents: {len(web_structured_docs)}")
+    logger.info(f"  - PDF documents: {len(structured_pdf_docs)}")
+    
+    # Save final combined documents
+    obj.save_checkpoint(all_docs, "06_final_combined", timestamp)
+    
+    # Also save a human-readable summary
+    summary = {
+        "timestamp": timestamp,
+        "total_documents": len(all_docs),
+        "web_documents": len(web_structured_docs),
+        "pdf_documents": len(structured_pdf_docs),
+        "urls_scraped": len(urls_to_scrape),
+        "processing_steps": [
+            "01_web_scraping",
+            "02_attachments_downloaded",
+            "03_pdf_extraction_raw",
+            "04_pdf_structured",
+            "05_web_structured",
+            "06_final_combined"
+        ]
+    }
+    
+    summary_file = obj.checkpoint_dir / f"summary_{timestamp}.json"
+    with open(summary_file, 'w', encoding='utf-8') as f:
+        json.dump(summary, f, indent=2)
+    
+    logger.info("="*80)
+    logger.info("PIPELINE COMPLETE ✅")
+    logger.info("="*80)
+    logger.info(f"All checkpoints saved in: {obj.checkpoint_dir}")
+    logger.info(f"Summary file: {summary_file}")
     
     return all_docs
 
@@ -270,4 +652,4 @@ if __name__ == "__main__":
     
     # Uncomment to create embeddings
     # print("\n🔄 Creating embeddings...")
-    # create_embeddings_in_batches(structured_docs, batch_size=70, sleep_time=60)
+    create_embeddings_in_batches(structured_docs, batch_size=70, sleep_time=60)

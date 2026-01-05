@@ -5,6 +5,7 @@ from langchain_chroma import Chroma
 from typing import Optional, List
 import os
 import logging
+import uuid
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -104,9 +105,12 @@ class EmbeddingsGeneration:
                 persist_directory=self.persist_directory,
             )
             
+            # Generate unique IDs for documents
+            unique_ids = [str(uuid.uuid4()) for _ in range(len(docs))]
+            
             # Add documents with progress tracking
             logger.info(f"Adding {len(docs)} documents to vector store...")
-            self.vector_store.add_documents(documents=docs)
+            self.vector_store.add_documents(documents=docs, ids=unique_ids)
             logger.info(f"Successfully added {len(docs)} documents to vector store")
 
             return self.vector_store
@@ -142,7 +146,9 @@ class EmbeddingsGeneration:
         logger.info(f"Adding {len(docs)} documents to existing vector store...")
         
         try:
-            self.vector_store.add_documents(documents=docs)
+            # Generate unique IDs for documents
+            unique_ids = [str(uuid.uuid4()) for _ in range(len(docs))]
+            self.vector_store.add_documents(documents=docs, ids=unique_ids)
             logger.info(f"Successfully added {len(docs)} documents")
             return self.vector_store
         except Exception as e:
