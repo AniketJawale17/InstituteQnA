@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>COEP Admissions Q&A</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/chat.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="hero">
+      <div class="hero__glow" aria-hidden="true"></div>
+      <div class="hero__content">
+        <p class="eyebrow">COEP Technological University</p>
+        <h1>Admissions Q&A Copilot</h1>
+        <p class="lead">Ask about undergraduate admissions, fees, hostel rules, scholarships, or campus services. Answers are grounded in the university knowledge base.</p>
+        <div class="hero__meta">
+          <div class="meta-pill" id="status-pill">Checking system...</div>
+          <div class="meta-pill">RAG powered</div>
+          <div class="meta-pill">Sources included</div>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel panel--sidebar">
+        <div class="panel__header">
+          <h2>Quick Prompts</h2>
+          <p class="muted">Tap to autofill the input.</p>
+        </div>
+        <div class="prompt-grid" id="prompt-grid">
+          <button class="prompt-chip">What are the eligibility criteria for B.Tech admissions?</button>
+          <button class="prompt-chip">How do I apply for hostel accommodation and what are the rules?</button>
+          <button class="prompt-chip">Share the fee structure and any scholarships available.</button>
+          <button class="prompt-chip">Where can I find student support contacts?</button>
+          <button class="prompt-chip">List facilities for differently abled students.</button>
+          <button class="prompt-chip">Which documents are required during counseling?</button>
+        </div>
+        <div class="panel__footer">
+          <p class="muted">Responses cite retrieved sources so you can verify details.</p>
+        </div>
+      </section>
+
+      <section class="panel panel--chat">
+        <div class="panel__header chat__header">
+          <div>
+            <h2>Ask a Question</h2>
+            <p class="muted">The assistant uses retrieval augmented generation to stay factual.</p>
+          </div>
+          <div class="badge" id="model-pill">Model: loading...</div>
+        </div>
+
+        <div class="chat__window" id="chat-window">
+          <div class="message message--ai">
+            <div class="message__role">Assistant</div>
+            <div class="message__content">Hi! I can help with admissions, hostel, fees, scholarships, and campus services. Ask me anything.</div>
+          </div>
+        </div>
+
+        <form class="chat__composer" id="chat-form">
+          <textarea id="question" name="question" rows="2" placeholder="Type your question..." autocomplete="off" required></textarea>
+          <div class="composer__actions">
+            <label class="checkbox">
+              <input type="checkbox" id="include-sources" checked />
+              <span>Include sources</span>
+            </label>
+            <button type="submit" id="send-btn">
+              <span id="send-label">Send</span>
+              <span id="send-spinner" class="spinner" aria-hidden="true"></span>
+            </button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/js/chat.js"></script>
+</body>
+</html>

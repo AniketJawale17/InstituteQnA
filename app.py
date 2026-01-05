@@ -1,11 +1,17 @@
 # APIs for Institute QnA application
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from typing import Optional, List
+from pathlib import Path
 import os
 import uvicorn
 from dotenv import load_dotenv
 from institute_qna import WebBasedLoader
 from institute_qna.data_preprocess.extract_pdf_text import PDFTextExtractor
+from institute_qna.rag import RAGPipeline
 from institute_qna.logging_config import configure_logging
 import pandas as pd
 
@@ -22,8 +28,53 @@ app = FastAPI(
     # contact="aniketjawale17@gmail.com"
     )
 
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+TEMPLATE_DIR = BASE_DIR / "templates"
+
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
 import logging
 logger = logging.getLogger(__name__)
+
+# Pydantic models for request/response
+class QueryRequest(BaseModel):
+    question: str
+    top_k: Optional[int] = 5
+    return_sources: Optional[bool] = True
+    
+class QueryResponse(BaseModel):
+    question: str
+    answer: str
+    processing_time: float
+    num_sources: Optional[int] = None
+    sources: Optional[List[dict]] = None
+
+class BatchQueryRequest(BaseModel):
+    questions: List[str]
+    top_k: Optional[int] = 5
+    return_sources: Optional[bool] = False
+
+# Initialize RAG Pipeline (lazy loading)
+rag_pipeline: Optional[RAGPipeline] = None
+
+def get_rag_pipeline() -> RAGPipeline:
+    """Get or initialize the RAG pipeline."""
+    global rag_pipeline
+    if rag_pipeline is None:
+        try:
+            rag_pipeline = RAGPipeline(
+                persist_directory="./ug_admission_data",
+                llm_provider=os.getenv("LLM_PROVIDER", "google"),
+                top_k=int(os.getenv("RAG_TOP_K", "1")),
+                temperature=float(os.getenv("LLM_TEMPERATURE", "0.3"))
+            )
+            logger.info("RAG Pipeline initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize RAG Pipeline: {e}")
+            raise HTTPException(status_code=500, detail="Failed to initialize RAG system")
+    return rag_pipeline
 
 
 
@@ -36,6 +87,15 @@ async def system_status() -> dict:
     }
 
 
+@app.get("/chat", response_class=HTMLResponse)
+async def chat_ui() -> HTMLResponse:
+    """Serve the admissions Q&A chat interface."""
+    html_path = TEMPLATE_DIR / "chat.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=500, detail="Chat UI assets missing. Please rebuild UI.")
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+
+
 @app.post("/Extract")
 
 async def extract() -> dict:
@@ -43,6 +103,7 @@ async def extract() -> dict:
     try:
         url = "https://www.coeptech.ac.in/admissions/undergraduate/"
         WebBasedLoader.load_html_markdown_from_url(url)
+        
         logger.info("Generated admission data json in extracted text data")
         
         return {"Status": "Success"}
@@ -70,6 +131,105 @@ async def process(pdf_path_folder : str) -> dict:
     except Exception as e:
         logger.exception("Unexpected error occurred while processing PDF", e)
         return {"Error": str(e)}
+
+
+@app.post("/query", response_model=QueryResponse)
+async def query_endpoint(request: QueryRequest) -> dict:
+    """
+    Query the RAG system with a question.
+    
+    Args:
+        request: QueryRequest containing question and optional parameters
+        
+    Returns:
+        QueryResponse with answer and sources
+    """
+    try:
+        pipeline = get_rag_pipeline()
+        print("RAG Pipeline obtained successfully", pipeline)
+        # Process the query
+        response = pipeline.query(
+            question=request.question,
+            top_k=request.top_k,
+            return_sources=request.return_sources
+        )
+        
+        if "error" in response:
+            raise HTTPException(status_code=500, detail=response["error"])
+        
+        logger.info(f"Processed query: {request.question[:50]}...")
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error processing query", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/batch_query")
+async def batch_query_endpoint(request: BatchQueryRequest) -> dict:
+    """
+    Process multiple questions in batch.
+    
+    Args:
+        request: BatchQueryRequest with list of questions
+        
+    Returns:
+        List of responses
+    """
+    try:
+        pipeline = get_rag_pipeline()
+        
+        responses = pipeline.batch_query(
+            questions=request.questions,
+            top_k=request.top_k,
+            return_sources=request.return_sources
+        )
+        
+        logger.info(f"Processed batch of {len(request.questions)} queries")
+        return {
+            "total_questions": len(request.questions),
+            "responses": responses
+        }
+        
+    except Exception as e:
+        logger.exception("Error processing batch query", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/health")
+async def health_check() -> dict:
+    """
+    Health check endpoint to verify RAG system is ready.
+    """
+    try:
+        pipeline = get_rag_pipeline()
+        return {
+            "status": "healthy",
+            "rag_initialized": pipeline is not None,
+            "message": "RAG system is ready"
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "status": "unhealthy",
+            "error": str(e)
+        }
+
+
+@app.get("/ui/meta")
+async def ui_meta() -> dict:
+    """Expose lightweight metadata for the UI banner."""
+    pipeline = get_rag_pipeline()
+    llm_handler = getattr(pipeline, "llm_handler", None)
+    retriever = getattr(pipeline, "retriever", None)
+
+    return {
+        "provider": getattr(llm_handler, "provider", "unknown"),
+        "model": getattr(llm_handler, "model_name", "unknown"),
+        "top_k": getattr(retriever, "top_k", None),
+    }
 
 
 if __name__ == "__main__":

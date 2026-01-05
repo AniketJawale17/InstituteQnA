@@ -2,61 +2,196 @@
 
 from langchain_openai import AzureOpenAIEmbeddings
 from langchain_chroma import Chroma
-import getpass
+from typing import Optional, List
 import os
+import logging
+from dotenv import load_dotenv
+
+load_dotenv()
+logger = logging.getLogger(__name__)
 
 class EmbeddingsGeneration:
-    """ Embedding Generation Class"""
+    """Embedding Generation Class for creating and managing vector embeddings.
+    
+    This class handles the generation of embeddings using Azure OpenAI and stores
+    them in a Chroma vector database for efficient similarity search.
+    """
 
-    def __init__(self):
-        self.AZURE_OPENAI_ENDPOINT="https://collegeprojectapi.openai.azure.com/"
-        self.AZURE_OPENAI_API_KEY="DMhyB88GcvyTOwIRa0PYCtaAIJmdxhaOgleZ0Cypz6A3myyP04rsJQQJ99BIACF24PCXJ3w3AAABACOGH7bz"
-        self.AZURE_OPENAI_API_VERSION="2024-02-01"
-        self.model = "text-embedding-3-small"
+    def __init__(
+        self,
+        model: str = "text-embedding-3-small",
+        collection_name: str = "UG_admission_data",
+        persist_directory: str = "./ug_admission_data"
+    ):
+        """Initialize the Embeddings Generation class.
+        
+        Args:
+            model: Name of the Azure OpenAI embedding model
+            collection_name: Name of the Chroma collection
+            persist_directory: Directory to persist the vector store
+            
+        Raises:
+            ValueError: If required environment variables are not set
+        """
+        # Load from environment variables for security
+        self.AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+        self.AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
+        self.AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
+        
+        # Validate required environment variables
+        if not self.AZURE_OPENAI_API_KEY:
+            raise ValueError(
+                "AZURE_OPENAI_API_KEY environment variable is not set. "
+                "Please set it in your .env file."
+            )
+        if not self.AZURE_OPENAI_ENDPOINT:
+            raise ValueError(
+                "AZURE_OPENAI_ENDPOINT environment variable is not set. "
+                "Please set it in your .env file."
+            )
+        
+        self.model = model
+        self.collection_name = collection_name
+        self.persist_directory = persist_directory
+        self.vector_store: Optional[Chroma] = None
+        
+        logger.info(
+            f"Initialized EmbeddingsGeneration with model: {model}, "
+            f"collection: {collection_name}"
+        )
 
 
     def openai_embeddings_generation(
             self,
-            docs,
-            model: str = "text-embedding-3-small",
-        ):
-        """Generates OpenAI Embeddings based on the model and text for inputs
+            docs: List,
+            model: Optional[str] = None,
+        ) -> Chroma:
+        """Generate OpenAI embeddings and create/initialize vector store.
 
         Args:
-            model (str, optional): _description_. Defaults to "text-embedding-3-small".
-            text (str, optional): _description_. Defaults to "".
+            docs: List of Document objects to embed and store
+            model: Embedding model name (uses instance model if not provided)
+            
+        Returns:
+            Chroma vector store instance
+            
+        Raises:
+            ValueError: If docs is empty or invalid
+            RuntimeError: If embedding generation fails
         """
-
-        if not isinstance(docs,list):
+        if not docs:
+            raise ValueError("docs parameter cannot be empty")
+        
+        if not isinstance(docs, list):
             docs = [docs]
+        
+        model = model or self.model
+        logger.info(f"Generating embeddings for {len(docs)} documents using {model}")
 
-        # OpenAI Embedding model
-        embeddings = AzureOpenAIEmbeddings(
-            model=model,
-        )
+        try:
+            # Initialize Azure OpenAI Embedding model
+            embeddings = AzureOpenAIEmbeddings(
+                model=model,
+                azure_endpoint=self.AZURE_OPENAI_ENDPOINT,
+                api_key=self.AZURE_OPENAI_API_KEY,
+                api_version=self.AZURE_OPENAI_API_VERSION
+            )
 
+            # Create or load vector store
+            self.vector_store = Chroma(
+                collection_name=self.collection_name,
+                embedding_function=embeddings,
+                persist_directory=self.persist_directory,
+            )
+            
+            # Add documents with progress tracking
+            logger.info(f"Adding {len(docs)} documents to vector store...")
+            self.vector_store.add_documents(documents=docs)
+            logger.info(f"Successfully added {len(docs)} documents to vector store")
 
-        self.vector_store = Chroma(
-            collection_name="UG_admission_data",
-            embedding_function=embeddings,
-            persist_directory="./ug_admission_data",  # Where to save data locally, remove if not necessary
-        )
-        self.vector_store.add_documents(documents=docs)
-
+            return self.vector_store
+            
+        except Exception as e:
+            logger.error(f"Failed to generate embeddings: {e}")
+            raise RuntimeError(f"Embedding generation failed: {e}") from e
+    
+    def add_documents(self, docs: List) -> Chroma:
+        """Add documents to the existing vector store.
+        
+        Args:
+            docs: List of Document objects to add
+            
+        Returns:
+            Updated Chroma vector store
+            
+        Raises:
+            ValueError: If vector store is not initialized or docs is empty
+        """
+        if self.vector_store is None:
+            raise ValueError(
+                "Vector store not initialized. "
+                "Please run openai_embeddings_generation first."
+            )
+        
+        if not docs:
+            raise ValueError("docs parameter cannot be empty")
+        
+        if not isinstance(docs, list):
+            docs = [docs]
+        
+        logger.info(f"Adding {len(docs)} documents to existing vector store...")
+        
+        try:
+            self.vector_store.add_documents(documents=docs)
+            logger.info(f"Successfully added {len(docs)} documents")
+            return self.vector_store
+        except Exception as e:
+            logger.error(f"Failed to add documents: {e}")
+            raise
+    
+    def get_vector_store(self) -> Optional[Chroma]:
+        """Get the current vector store instance.
+        
+        Returns:
+            Chroma vector store or None if not initialized
+        """
         return self.vector_store
     
-    def add_documents(self, docs: list):
-        """Add documents to the existing vector store."""
-        if not hasattr(self, 'vector_store'):
-            raise ValueError("Vector store not initialized. Please run openai_embeddings_generation first.")
+    def load_existing_vector_store(self) -> Chroma:
+        """Load an existing vector store from disk.
         
-        self.vector_store.add_documents(documents=docs)
-        return self.vector_store
-
-
-
-# if __name__ == "__main__":
-#     text = "LangChain is the framework for building context-aware reasoning applications"
-
-#     generator = EmbeddingsGeneration()
-#     print(generator.openai_embeddings_generation(text = text))
+        Returns:
+            Loaded Chroma vector store
+            
+        Raises:
+            FileNotFoundError: If vector store doesn't exist
+        """
+        from pathlib import Path
+        
+        if not Path(self.persist_directory).exists():
+            raise FileNotFoundError(
+                f"Vector store not found at {self.persist_directory}"
+            )
+        
+        logger.info(f"Loading existing vector store from {self.persist_directory}")
+        
+        try:
+            embeddings = AzureOpenAIEmbeddings(
+                model=self.model,
+                azure_endpoint=self.AZURE_OPENAI_ENDPOINT,
+                api_key=self.AZURE_OPENAI_API_KEY,
+                api_version=self.AZURE_OPENAI_API_VERSION
+            )
+            
+            self.vector_store = Chroma(
+                collection_name=self.collection_name,
+                embedding_function=embeddings,
+                persist_directory=self.persist_directory,
+            )
+            
+            logger.info("Successfully loaded existing vector store")
+            return self.vector_store
+            
+        except Exception as e:
+            logger.error(f"Failed to load vector store: {e}")
+            raise
