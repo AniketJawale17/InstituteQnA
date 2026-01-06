@@ -6,13 +6,12 @@
   <title>COEP Admissions Q&A</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/chat.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/chat.css?v=3" />
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
   <script>
-    // Ensure marked is loaded and configured
     if (typeof marked !== 'undefined') {
       marked.setOptions({
         breaks: true,
@@ -20,69 +19,97 @@
       });
     }
   </script>
-  <div class="page">
-    <header class="hero">
-      <div class="hero__glow" aria-hidden="true"></div>
-      <div class="hero__content">
-        <p class="eyebrow">COEP Technological University</p>
-        <h1>Admissions Q&A Copilot</h1>
-        <p class="lead">Ask about undergraduate admissions. Answers are grounded in the university knowledge base.</p>
-        <div class="hero__meta">
-          <div class="meta-pill" id="status-pill">Checking system...</div>
-          <div class="meta-pill">RAG powered</div>
-          <div class="meta-pill">Sources included</div>
+
+  <div class="app-container">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar__header">
+        <div class="logo">
+          <div class="logo__icon">🎓</div>
+          <div class="logo__text">
+            <h1>COEP</h1>
+            <p>Q&A</p>
+          </div>
         </div>
       </div>
-    </header>
 
-    <main class="layout">
-      <section class="panel panel--sidebar">
-        <div class="panel__header">
-          <h2>Quick Prompts</h2>
-          <p class="muted">Tap to autofill the input.</p>
-        </div>
-        <div class="prompt-grid" id="prompt-grid">
-          <button class="prompt-chip">What are the eligibility criteria for B.Tech admissions?</button>
-          <button class="prompt-chip">Which documents are required during counseling?</button>
-        </div>
-        <div class="panel__footer">
-          <p class="muted">Responses cite retrieved sources so you can verify details.</p>
-        </div>
-      </section>
-
-      <section class="panel panel--chat">
-        <div class="panel__header chat__header">
-          <div>
-            <h2>Ask a Question</h2>
-            <p class="muted">The assistant uses retrieval augmented generation to stay factual.</p>
-          </div>
-          <div class="badge" id="model-pill">Model: loading...</div>
-        </div>
-
-        <div class="chat__window" id="chat-window">
-          <div class="message message--ai">
-            <div class="message__role">Assistant</div>
-            <div class="message__content">Hi! I can help with admissions, hostel, fees, scholarships, and campus services. Ask me anything.</div>
+      <div class="sidebar__content">
+        <div class="suggestions-section">
+          <h3>Quick Prompts</h3>
+          <div class="prompt-grid" id="prompt-grid">
+            <button class="prompt-chip">What are the eligibility criteria for B.Tech admissions?</button>
+            <button class="prompt-chip">Which documents are required during counseling?</button>
           </div>
         </div>
 
-        <form class="chat__composer" id="chat-form">
-          <textarea id="question" name="question" rows="2" placeholder="Type your question..." autocomplete="off" required></textarea>
-          <div class="composer__actions">
-            <label class="checkbox">
-              <input type="checkbox" id="include-sources" checked />
-              <span>Include sources</span>
-            </label>
-            <button type="submit" id="send-btn">
-              <span id="send-label">Send</span>
-              <span id="send-spinner" class="spinner" aria-hidden="true"></span>
-            </button>
+        <div class="info-section">
+          <div class="info-card">
+            <h4>💡 Tip</h4>
+            <p>Use the suggestions or type your question for instant answers.</p>
           </div>
-        </form>
-      </section>
+          <div class="info-card">
+            <h4>🔍 Smart Search</h4>
+            <p>Get answers from university knowledge base with sources.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="sidebar__footer">
+        <div class="status-indicator" id="status-pill">
+          <span class="status-dot"></span>
+          <span>System ready</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Chat Area -->
+    <main class="chat-container">
+      <!-- Chat Header -->
+      <header class="chat-header">
+        <div class="chat-header__content">
+          <h1>Admissions Q&A Assistant</h1>
+          <p>Powered by advanced retrieval and AI</p>
+        </div>
+        <div class="chat-header__badge" id="model-pill">Model: loading...</div>
+      </header>
+
+      <!-- Chat Messages -->
+      <div class="chat__window" id="chat-window">
+        <div class="message message--ai" style="animation: slideIn 0.5s ease;">
+          <div class="message__avatar">🤖</div>
+          <div class="message__body">
+            <div class="message__content">Hi! I'm your COEP admissions assistant. I can help you with eligibility criteria, application process, documents, fees, scholarships, hostel facilities, and more. What would you like to know?</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Chat Composer -->
+      <form class="chat-composer" id="chat-form">
+        <div class="composer__input-area">
+          <div class="textarea-wrapper">
+            <textarea id="question" name="question" placeholder="Ask anything about COEP admissions..." autocomplete="off" required></textarea>
+            <ul class="autocomplete-list" id="autocomplete-list"></ul>
+          </div>
+          <button type="submit" id="send-btn" class="send-btn" title="Send message (Enter)">
+            <span class="send-btn__icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M16.691 6.61a.999.999 0 0 0-1.415 0l-10.182 10.18a1 1 0 0 0 0 1.414l1.414 1.415a1 1 0 0 0 1.415 0l10.181-10.181a1 1 0 0 0 0-1.414l-1.413-1.414z"/>
+                <path d="M3 13.5V20a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9"/>
+              </svg>
+            </span>
+          </button>
+        </div>
+        <div class="composer__options">
+          <label class="option-checkbox">
+            <input type="checkbox" id="include-sources" checked />
+            <span class="checkmark"></span>
+            <span class="option-text">Show sources</span>
+          </label>
+        </div>
+      </form>
     </main>
   </div>
 
-  <script src="/static/js/chat.js?v=2"></script>
+  <script src="/static/js/chat.js?v=3"></script>
 </body>
 </html>

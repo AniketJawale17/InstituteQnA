@@ -232,5 +232,58 @@ async def ui_meta() -> dict:
     }
 
 
+# Common admission-related search suggestions
+ADMISSION_SUGGESTIONS = [
+    "What are the eligibility criteria",
+    "What documents are required",
+    "What is the admission process",
+    "What are the fees",
+    "What about scholarships",
+    "What is the application deadline",
+    "What about hostel facilities",
+    "What is the cutoff score",
+    "How to apply for B.Tech",
+    "What subjects can I choose",
+    "What is the course duration",
+    "What about placement statistics",
+    "How do I check my admission status",
+    "What is the seat matrix",
+    "Can I take admission through management quota",
+    "What about counseling rounds",
+    "What is the validity of JEE Main score",
+    "How to fill the choice form",
+    "What is the merit list",
+    "What about CAP round admission",
+]
+
+
+@app.get("/autocomplete")
+async def get_autocomplete_suggestions(query: str = "") -> dict:
+    """
+    Get autocomplete suggestions based on partial query.
+    
+    Args:
+        query: Partial query string from user
+        
+    Returns:
+        Dictionary with suggestions list
+    """
+    if not query or len(query) < 2:
+        return {"suggestions": []}
+    
+    query_lower = query.lower()
+    # Filter suggestions that start with or contain the query
+    matching = [s for s in ADMISSION_SUGGESTIONS 
+                if query_lower in s.lower()]
+    
+    # Sort by relevance (exact prefix match first)
+    matching.sort(key=lambda x: (
+        not x.lower().startswith(query_lower),
+        len(x)
+    ))
+    
+    return {"suggestions": matching[:8]}  # Return max 8 suggestions
+
+
 if __name__ == "__main__":
     uvicorn.run("app:app", reload=False, workers=4, port=8005, host="0.0.0.0")
