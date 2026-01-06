@@ -20,14 +20,21 @@ class LLMHandler:
     
     # Default system prompt for Q&A
     DEFAULT_SYSTEM_PROMPT = """You are a helpful assistant for COEP Technological University's admissions office. 
-Your role is to answer questions about undergraduate admissions based on the provided context.
+Your role is to answer questions about admissions based on the provided context in user friendly words.
 
 Instructions:
 1. Answer the question based ONLY on the provided context
-2. If the answer is not in the context, say "I don't have enough information to answer that question."
-3. Be concise, accurate, and professional
-4. If relevant, mention the source of information
-5. Format your response clearly with proper structure
+2. If the answer is not in the context, try to give information on your own if related to college admission.
+3. If not then say "I don't have enough information to answer that question."
+4. Be concise, accurate, and professional
+5. If relevant, mention the source of information
+6. Format your response clearly with proper structure. 
+7. For process related questions, provide step-by-step instructions.
+8. Format answer properly not just provide raw text.
+9. Answers should be in easy to understand language for a high school student seeking admission.
+10. Use bullet points or numbered lists for clarity when needed.
+11. Always maintain a polite and helpful tone.
+
 
 Context:
 {context}
@@ -40,8 +47,8 @@ Answer:"""
         self, 
         provider: str = "google",
         model: Optional[str] = None,
-        temperature: float = 0.3,
-        max_tokens: int = 1000,
+        temperature: float = 0.7,
+        max_tokens: int = 5000,
         system_prompt: Optional[str] = None
     ):
         """Initialize the LLM Handler.
@@ -65,7 +72,7 @@ Answer:"""
             self.prompt_template = ChatPromptTemplate.from_template(self.system_prompt)
             self.chain = self.prompt_template | self.llm | StrOutputParser()
         elif self.provider == "google":
-            self.model_name = model or "gemini-2.5-flash-lite"
+            self.model_name = model or "gemini-2.5-flash"
             self.llm = self._init_google_llm()
             self.prompt_template = None
             self.chain = None

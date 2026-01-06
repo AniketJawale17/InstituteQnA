@@ -17,7 +17,18 @@ function appendMessage(role, text, sources) {
 
   const contentEl = document.createElement('div');
   contentEl.className = 'message__content';
-  contentEl.textContent = text;
+  // For user messages, use plain text. For AI messages, render markdown as HTML
+  if (role === 'user') {
+    contentEl.textContent = text;
+  } else {
+    // Check if marked is available, fallback to plain text if not
+    if (typeof marked !== 'undefined' && marked.parse) {
+      contentEl.innerHTML = marked.parse(text);
+    } else {
+      console.error('Marked.js not loaded');
+      contentEl.textContent = text;
+    }
+  }
 
   message.appendChild(roleEl);
   message.appendChild(contentEl);
