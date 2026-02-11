@@ -55,16 +55,21 @@ class KnowledgeBaseCreation(PDFTextExtractor):
         r'\d+\n\d+\n\d+\n\d+ Visitors',  # Visitor counter
     ]
     
-    def __init__(self, checkpoint_dir: str = "extracted_text_data/checkpoints"):
+    def __init__(
+        self,
+        checkpoint_dir: str = "extracted_text_data/checkpoints",
+        university: str = "coep"
+    ):
         """Initialize the Knowledge Base Creation class.
         
         Args:
             checkpoint_dir: Directory to save checkpoint files
         """
-        super().__init__()
+        super().__init__(university=university)
         self.structured_documents: List[Document] = []
         self._seen_content_hashes: Set[str] = set()
         self.checkpoint_dir = Path(checkpoint_dir)
+        self.university = university
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Checkpoint directory: {self.checkpoint_dir}")
     
@@ -105,6 +110,15 @@ class KnowledgeBaseCreation(PDFTextExtractor):
         except Exception as e:
             logger.error(f"Failed to save checkpoint {step_name}: {e}")
             raise
+
+    def clear_tables_checkpoint_dir(self) -> None:
+        """Remove existing table CSVs to avoid duplicates between runs."""
+        tables_dir = Path(self.tables_output_dir)
+        if not tables_dir.exists():
+            return
+        for entry in tables_dir.iterdir():
+            if entry.is_file():
+                entry.unlink()
     
     def load_checkpoint(self, checkpoint_file: Path, as_documents: bool = False) -> any:
         """Load data from checkpoint file.
@@ -156,20 +170,20 @@ class KnowledgeBaseCreation(PDFTextExtractor):
         for idx, doc in enumerate(extracted_docs):
             try:
                 content = doc.page_content
-                source = doc.metadata.get('source', 'unknown')
-                page = doc.metadata.get('page')
-                page_label = doc.metadata.get('page_label')
-                
-                structured.append(
-                    Document(
-                        page_content=content,
-                        metadata={
-                            "source": source,
-                            "page": str(page) if page is not None else None,
-                            "page_label": page_label
-                        }
-                    )
-                )
+                metadata = dict(doc.metadata) if doc.metadata else {}
+
+                source = metadata.get("source", "unknown")
+                page = metadata.get("page")
+                page_label = metadata.get("page_label")
+
+                metadata.update({
+                    "source": source,
+                    "page": str(page) if page is not None else None,
+                    "page_label": page_label,
+                    "university": self.university,
+                })
+
+                structured.append(Document(page_content=content, metadata=metadata))
             except Exception as e:
                 logger.warning(f"Failed to structure document {idx}: {e}")
                 continue
@@ -297,17 +311,58 @@ class KnowledgeBaseCreation(PDFTextExtractor):
             Deduplicated list of chunks
         """
         unique_chunks = []
-        
+        buckets = {}
+
+        def normalize_for_similarity(text: str) -> str:
+            text = re.sub(r"\s+", " ", text.lower()).strip()
+            text = re.sub(r"\d+", "0", text)
+            return text
+
+        def shingle_hashes(text: str, size: int = 5) -> set:
+            tokens = text.split()
+            if not tokens:
+                return set()
+            if len(tokens) <= size:
+                joined = " ".join(tokens)
+                return {hashlib.md5(joined.encode("utf-8")).hexdigest()}
+            hashes = set()
+            for i in range(len(tokens) - size + 1):
+                shingle = " ".join(tokens[i:i + size])
+                hashes.add(hashlib.md5(shingle.encode("utf-8")).hexdigest())
+            return hashes
+
+        def jaccard_similarity(a: set, b: set) -> float:
+            if not a or not b:
+                return 0.0
+            return len(a & b) / len(a | b)
+
         for chunk in chunks:
-            normalized = re.sub(r'\s+', ' ', chunk.page_content.lower().strip())
-            content_hash = hashlib.md5(normalized.encode()).hexdigest()
-            
-            if content_hash not in self._seen_content_hashes:
-                self._seen_content_hashes.add(content_hash)
-                unique_chunks.append(chunk)
-            else:
+            normalized = normalize_for_similarity(chunk.page_content)
+            content_hash = hashlib.md5(normalized.encode("utf-8")).hexdigest()
+
+            if content_hash in self._seen_content_hashes:
                 logger.debug(f"Skipping duplicate chunk from {chunk.metadata.get('source', 'unknown')}")
-        
+                continue
+
+            shingles = shingle_hashes(normalized)
+            length_bucket = max(1, len(normalized) // 200)
+            bucket = buckets.setdefault(length_bucket, [])
+
+            is_near_duplicate = False
+            for candidate in bucket[-200:]:
+                similarity = jaccard_similarity(shingles, candidate["shingles"])
+                if similarity >= 0.95:
+                    is_near_duplicate = True
+                    break
+
+            if is_near_duplicate:
+                logger.debug(f"Skipping near-duplicate chunk from {chunk.metadata.get('source', 'unknown')}")
+                continue
+
+            self._seen_content_hashes.add(content_hash)
+            bucket.append({"shingles": shingles})
+            unique_chunks.append(chunk)
+
         logger.info(f"Deduplicated {len(chunks)} chunks to {len(unique_chunks)} unique chunks")
         return unique_chunks
 
@@ -379,6 +434,8 @@ class KnowledgeBaseCreation(PDFTextExtractor):
                             "page": title,
                             "page_label": 1000,
                             "doc_type": doc_type,
+                            "source_type": "web",
+                            "university": self.university,
                             **extracted_metadata
                         }
                     )
@@ -427,6 +484,9 @@ def main() -> List[Document]:
     
     obj = KnowledgeBaseCreation()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Clear previous table CSVs to avoid duplicates
+    obj.clear_tables_checkpoint_dir()
     
     # ========== STEP 1: WEB SCRAPING ==========
     logger.info("\n" + "="*80)
@@ -518,11 +578,25 @@ def main() -> List[Document]:
         
         # Save raw extracted PDF documents
         obj.save_checkpoint(extracted_docs, "03_pdf_extraction_raw", timestamp)
-        
-        # Structure PDF documents
-        structured_pdf_docs = obj.structure_documents(extracted_docs)
+
+        merit_table_docs = []
+        filtered_pdf_docs = []
+        for doc in extracted_docs:
+            doc_type = (doc.metadata or {}).get("doc_type")
+            filename = (doc.metadata or {}).get("filename", "")
+            if doc_type == "merit_list" or "merit" in filename.lower():
+                merit_table_docs.append(doc)
+            else:
+                filtered_pdf_docs.append(doc)
+
+        if merit_table_docs:
+            obj.save_checkpoint(merit_table_docs, "04_pdf_tables", timestamp)
+            logger.info(f"✅ Saved {len(merit_table_docs)} merit list tables to separate checkpoint")
+
+        # Structure PDF documents (including non-merit tables)
+        structured_pdf_docs = obj.structure_documents(filtered_pdf_docs)
         obj.save_checkpoint(structured_pdf_docs, "04_pdf_structured", timestamp)
-        
+
         logger.info(f"✅ PDF processing complete: {len(structured_pdf_docs)} documents")
     except Exception as e:
         logger.error(f"Failed to process PDFs: {e}")
@@ -554,6 +628,10 @@ def main() -> List[Document]:
     logger.info(f"  - Web documents: {len(web_structured_docs)}")
     logger.info(f"  - PDF documents: {len(structured_pdf_docs)}")
     
+    # Final cross-source deduplication
+    all_docs = obj.deduplicate_chunks(all_docs)
+    logger.info(f"Total documents after final deduplication: {len(all_docs)}")
+
     # Save final combined documents
     obj.save_checkpoint(all_docs, "06_final_combined", timestamp)
     
@@ -671,4 +749,4 @@ if __name__ == "__main__":
     
     # Uncomment to create embeddings
     # print("\n🔄 Creating embeddings...")
-    # create_embeddings_in_batches(structured_docs, batch_size=70, sleep_time=60)
+    create_embeddings_in_batches(structured_docs, batch_size=70, sleep_time=60)

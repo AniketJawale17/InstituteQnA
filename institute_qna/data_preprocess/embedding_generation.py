@@ -2,6 +2,7 @@
 
 from langchain_openai import AzureOpenAIEmbeddings
 from langchain_chroma import Chroma
+from langchain_community.vectorstores.utils import filter_complex_metadata
 from typing import Optional, List
 import os
 import logging
@@ -105,6 +106,9 @@ class EmbeddingsGeneration:
                 persist_directory=self.persist_directory,
             )
             
+            # Normalize metadata for vector store compatibility
+            docs = filter_complex_metadata(docs)
+
             # Generate unique IDs for documents
             unique_ids = [str(uuid.uuid4()) for _ in range(len(docs))]
             
@@ -147,6 +151,7 @@ class EmbeddingsGeneration:
         
         try:
             # Generate unique IDs for documents
+            docs = filter_complex_metadata(docs)
             unique_ids = [str(uuid.uuid4()) for _ in range(len(docs))]
             self.vector_store.add_documents(documents=docs, ids=unique_ids)
             logger.info(f"Successfully added {len(docs)} documents")
