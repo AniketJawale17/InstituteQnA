@@ -14,6 +14,7 @@ from institute_qna.data_preprocess.extract_pdf_text import PDFTextExtractor
 from institute_qna.rag import RAGPipeline
 from institute_qna.logging_config import configure_logging
 import pandas as pd
+from difflib import SequenceMatcher
 
 load_dotenv()
 
@@ -151,7 +152,8 @@ async def query_endpoint(request: QueryRequest) -> dict:
         response = pipeline.query(
             question=request.question,
             top_k=request.top_k,
-            return_sources=request.return_sources
+            return_sources=request.return_sources,
+            stream=False
         )
         
         if "error" in response:
@@ -235,10 +237,8 @@ async def ui_meta() -> dict:
 # Common admission-related search suggestions
 ADMISSION_SUGGESTIONS = [
     "What are the eligibility criteria",
-    "What documents are required",
-    "What is the admission process",
-    "What are the fees",
-    "What about scholarships",
+    "What documents are required for btech admissions",
+    "What is the admission process for btech admissions",
     "What is the application deadline",
     "What about hostel facilities",
     "What is the cutoff score",
@@ -271,18 +271,22 @@ async def get_autocomplete_suggestions(query: str = "") -> dict:
     if not query or len(query) < 2:
         return {"suggestions": []}
     
-    query_lower = query.lower()
-    # Filter suggestions that start with or contain the query
-    matching = [s for s in ADMISSION_SUGGESTIONS 
-                if query_lower in s.lower()]
-    
-    # Sort by relevance (exact prefix match first)
-    matching.sort(key=lambda x: (
-        not x.lower().startswith(query_lower),
-        len(x)
-    ))
-    
-    return {"suggestions": matching[:8]}  # Return max 8 suggestions
+    query_lower = query.lower().strip()
+
+    def score_suggestion(s: str) -> float:
+        s_lower = s.lower()
+        ratio = SequenceMatcher(None, query_lower, s_lower).ratio()
+        if s_lower.startswith(query_lower):
+            ratio += 0.2
+        elif query_lower in s_lower:
+            ratio += 0.1
+        return ratio
+
+    scored = [(s, score_suggestion(s)) for s in ADMISSION_SUGGESTIONS]
+    scored = [item for item in scored if item[1] >= 0.4]
+    scored.sort(key=lambda x: (-x[1], len(x[0])))
+
+    return {"suggestions": [s for s, _ in scored[:8]]}
 
 
 if __name__ == "__main__":

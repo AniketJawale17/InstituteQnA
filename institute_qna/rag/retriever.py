@@ -79,7 +79,7 @@ class RAGRetriever:
                 )
             else:
                 results = self.vector_store.similarity_search(query, k=k)
-            
+            # print(results)
             # Format results
             formatted_results = []
             for doc in results:
@@ -94,7 +94,50 @@ class RAGRetriever:
         except Exception as e:
             logger.error(f"Error retrieving documents: {e}")
             raise
-    
+
+    def retrieve_test(
+        self, 
+        query: str, 
+        top_k: Optional[int] = None,
+        score_threshold: Optional[float] = None
+    ) -> List[Dict]:
+        """Retrieve relevant documents with similarity scores.
+        
+        Args:
+            query: User's question
+            top_k: Number of documents to retrieve
+            score_threshold: Minimum similarity score (0-1)
+            
+        Returns:
+            List of dictionaries with document content, metadata, and scores
+        """
+        k = top_k or self.top_k
+        
+        try:
+            # Perform similarity search with scores
+            results = self.vector_store.similarity_search_with_score(query, k=k)
+            # print(results)
+            # Format results
+            formatted_results = []
+            for doc, score in results:
+                # Skip if score is below threshold
+                if score_threshold and score < score_threshold:
+                    continue
+                    
+                formatted_results.append({
+                    "content": doc.page_content,
+                    "metadata": doc.metadata,
+                    "score": float(score),
+                    "id": doc.id
+                })
+            
+            logger.info(f"Retrieved {len(formatted_results)} documents with scores")
+            return formatted_results
+            
+        except Exception as e:
+            logger.error(f"Error retrieving documents with scores: {e}")
+            raise
+       
     def retrieve_with_scores(
         self, 
         query: str, 

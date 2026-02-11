@@ -435,23 +435,42 @@ def main() -> List[Document]:
     
     urls_to_scrape = [
         "https://www.coeptech.ac.in/admissions/undergraduate/",
-        # "https://www.coeptech.ac.in/about-us/about-university/",
-        # "https://www.coeptech.ac.in/hostel/hostel-admissions/",
-        # "https://www.coeptech.ac.in/hostel/rules-and-regulations/",
-        # "https://www.coeptech.ac.in/student-corner/student-services/student-helpline/",
-        # "https://www.coeptech.ac.in/student-corner/student-clubs/",
-        # "https://www.coeptech.ac.in/facilities/facilities-manager/facilities-for-differently-abled-individuals/",
-        # "https://www.coeptech.ac.in/useful-links/university-sections/"
+        "https://www.coeptech.ac.in/about-us/about-university/",
+        "https://www.coeptech.ac.in/hostel/hostel-admissions/",
+        "https://www.coeptech.ac.in/hostel/rules-and-regulations/",
+        "https://www.coeptech.ac.in/student-corner/student-services/student-helpline/",
+        "https://www.coeptech.ac.in/student-corner/student-clubs/",
+        "https://www.coeptech.ac.in/facilities/facilities-manager/facilities-for-differently-abled-individuals/",
+        "https://www.coeptech.ac.in/useful-links/university-sections/",
+        "https://www.coeptech.ac.in/admissions/undergraduate/first-year-admissions/",
+        "https://www.coeptech.ac.in/admissions/undergraduate/direct-second-year-admission/",
+        "https://www.coeptech.ac.in/admissions/undergraduate/working-professional/",
+        "https://mtech2025.coeptech.ac.in/StaticPages/HomePage",
+        "https://www.coeptech.ac.in/admissions/post-graduate/",
+        "https://www.coeptech.ac.in/admissions/ph-d/",
+        "https://www.coeptech.ac.in/admissions/mba/"
     ]
     
     try:
         logger.info(f"Scraping {len(urls_to_scrape)} URLs...")
+        data:list = []
         for idx, url in enumerate(urls_to_scrape):
             logger.info(f"  [{idx}/{len(urls_to_scrape)}] {url}")
-            WebBasedLoader.load_html_markdown_from_url(url)
+            temp_data = WebBasedLoader.load_html_markdown_from_url(url)
+            if temp_data:
+                data.extend(temp_data)
             if idx < len(urls_to_scrape):
                 sleep(2)  # Be respectful to the server
+
+
+
+        # Convert documents to serializable shape and write to file
+        serializable = WebBasedLoader.documents_to_serializable(data)
+        out_path = "extracted_text_data/admissions_data.json"
+        WebBasedLoader.write_json_atomic(out_path, serializable)
+        logger.info("Wrote %d documents to %s", len(serializable), out_path)
         
+
         # Save web scraping checkpoint
         web_data_path = Path("extracted_text_data/admissions_data.json")
         if web_data_path.exists():
@@ -652,4 +671,4 @@ if __name__ == "__main__":
     
     # Uncomment to create embeddings
     # print("\n🔄 Creating embeddings...")
-    create_embeddings_in_batches(structured_docs, batch_size=70, sleep_time=60)
+    # create_embeddings_in_batches(structured_docs, batch_size=70, sleep_time=60)

@@ -71,7 +71,7 @@ class WebBasedLoader:
 		WebBasedLoader.write_json_atomic("extracted_text_data/admissions_data.json", serializable)
 
 	@staticmethod
-	def load_html_markdown_from_url(url: str) -> None:
+	def load_html_markdown_from_url(url: str) -> list:
 		"""Load HTML and Markdown content from a web page URL, then save to JSON file."""
 		loader = WebBaseLoader(url)
 		data = loader.load()
@@ -110,7 +110,8 @@ class WebBasedLoader:
 				logger.debug("Unexpected document shape while processing source", exc_info=True)
 		
 		# Convert documents to serializable shape and write to file
-		serializable = WebBasedLoader.documents_to_serializable(data)
-		out_path = "extracted_text_data/admissions_data.json"
-		WebBasedLoader.write_json_atomic(out_path, serializable)
-		logger.info("Wrote %d documents to %s", len(serializable), out_path)
+		# serializable = WebBasedLoader.documents_to_serializable(data)
+		# out_path = "extracted_text_data/admissions_data.json"
+		# WebBasedLoader.write_json_atomic(out_path, serializable)
+		# logger.info("Wrote %d documents to %s", len(serializable), out_path)
+		return data
