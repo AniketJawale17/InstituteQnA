@@ -53,6 +53,7 @@ class WebBasedLoader:
 
 	@staticmethod
 	def write_json_atomic(path: Union[str, Path], data_obj, *, indent: Optional[int] = 2, ensure_ascii: bool = False):
+		"""Write a JSON object to a file atomically to avoid partial writes."""
 		path = Path(path)
 		path.parent.mkdir(parents=True, exist_ok=True)
 		with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(path.parent)) as tmp:

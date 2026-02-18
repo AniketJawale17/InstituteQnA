@@ -33,13 +33,13 @@ class PDFTextExtractor:
     """
 
     def __init__(
-              self, 
-              pdf_path: str = "attachments/brochure.pdf",
-              chunk_size: int = 2000, 
-                            chunk_overlap: int = 200,
-                              tables_output_dir: str = "extracted_text_data/checkpoints/tables",
-                            university: str = "coep",
-                            skip_merit_lists: bool = True
+                self, 
+                pdf_path: str = "attachments/brochure.pdf",
+                chunk_size: int = 2000, 
+                chunk_overlap: int = 200,
+                tables_output_dir: str = "extracted_text_data/checkpoints/tables",
+                university: str = "coep",
+                skip_merit_lists: bool = True
             ):
         """Initialize the PDF Text Extractor.
         
@@ -318,7 +318,7 @@ class PDFTextExtractor:
 
         try:
             logger.info(f"Loading PDF: {self.pdf_path}")
-            loader = PyPDFLoader(str(path))
+            loader = PyPDFLoader(str(path),extract_images=True)
             pages = loader.load()
             logger.info(f"Loaded {len(pages)} pages from PDF")
             

@@ -482,7 +482,7 @@ def main() -> List[Document]:
     logger.info("STARTING COMPLETE KNOWLEDGE BASE CREATION PIPELINE")
     logger.info("="*80)
     
-    obj = KnowledgeBaseCreation()
+    obj = KnowledgeBaseCreation(university="pune")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Clear previous table CSVs to avoid duplicates
@@ -509,7 +509,15 @@ def main() -> List[Document]:
         "https://www.coeptech.ac.in/admissions/post-graduate/",
         "https://www.coeptech.ac.in/admissions/ph-d/",
         "https://www.coeptech.ac.in/admissions/mba/"
+        
     ]
+    # urls_to_scrape = [
+    #     "https://mitaoe.ac.in/admission.php",
+    #     "https://mitaoe.ac.in/first-year-BTech.php",
+    #     "https://mitaoe.ac.in/MTech.php",
+    #     "https://mitaoe.ac.in/contact-us.php"
+
+    # ]
     
     try:
         logger.info(f"Scraping {len(urls_to_scrape)} URLs...")
@@ -679,7 +687,10 @@ def create_embeddings_in_batches(
     """
     logger.info(f"Creating embeddings for {len(documents)} documents in batches of {batch_size}")
     
-    embed_gen = EmbeddingsGeneration()
+    embed_gen = EmbeddingsGeneration(
+        collection_name="pune_admissions",
+        persist_directory="vector_store/pune_admissions"
+    )
     
     # Process first batch
     first_batch_size = min(batch_size, len(documents))
@@ -748,5 +759,5 @@ if __name__ == "__main__":
     print()
     
     # Uncomment to create embeddings
-    # print("\n🔄 Creating embeddings...")
+    print("\n🔄 Creating embeddings...")
     create_embeddings_in_batches(structured_docs, batch_size=70, sleep_time=60)
