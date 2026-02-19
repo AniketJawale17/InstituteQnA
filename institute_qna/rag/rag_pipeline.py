@@ -58,6 +58,7 @@ class RAGPipeline:
             persist_directory=persist_directory,
             collection_name=collection_name,
             model=embedding_model,
+            backend=os.getenv("RAG_VECTOR_BACKEND", os.getenv("VECTOR_BACKEND", "azure_ai_search")),
             top_k=top_k
         )
         

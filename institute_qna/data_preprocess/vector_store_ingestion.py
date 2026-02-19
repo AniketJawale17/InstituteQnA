@@ -13,7 +13,7 @@ from institute_qna.data_preprocess.chroma_vector_store import create_embeddings_
 
 def store_documents_in_vector_backend(
     documents: List[Document],
-    backend: str = os.getenv("VECTOR_BACKEND", "chroma"),
+    backend: str = os.getenv("VECTOR_BACKEND", "azure_ai_search"),
     batch_size: int = 100,
     sleep_time: int = 60,
     chroma_collection_name: str = os.getenv("CHROMA_COLLECTION_NAME", "UG_admission_data"),

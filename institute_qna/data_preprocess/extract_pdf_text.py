@@ -18,6 +18,9 @@ import hashlib
 import logging
 import re
 import os
+import io
+from datetime import datetime
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +41,12 @@ try:
 except ImportError:
     AZURE_DOC_INTELLIGENCE_AVAILABLE = False
     logger.info("Azure Document Intelligence not available. Install with: pip install azure-ai-documentintelligence")
+
+try:
+    from azure.storage.blob import BlobServiceClient
+    AZURE_BLOB_AVAILABLE = True
+except ImportError:
+    AZURE_BLOB_AVAILABLE = False
 
 
 class PDFTextExtractor:
@@ -77,6 +86,14 @@ class PDFTextExtractor:
         self.extraction_method = extraction_method
         self.extracted_text: List[Document] = []
         self._table_schema_paths: Dict[str, str] = {}
+        self._blob_service_client = None
+        self._blob_container_client = None
+        self.azure_blob_connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+        self.azure_blob_container_name = os.getenv("AZURE_STORAGE_CONTAINER_NAME", "qna-checkpoints")
+        self.tables_blob_prefix = os.getenv(
+            "AZURE_TABLES_BLOB_PREFIX",
+            f"tables/{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
         
         # Validate extraction method and dependencies
         if self.extraction_method == "azure" and not AZURE_DOC_INTELLIGENCE_AVAILABLE:
@@ -87,6 +104,44 @@ class PDFTextExtractor:
         self.azure_client = None
         if self.extraction_method == "azure":
             self._initialize_azure_client()
+            self._initialize_blob_client()
+
+    def _initialize_blob_client(self) -> None:
+        """Initialize Azure Blob container client for table CSV uploads."""
+        if not AZURE_BLOB_AVAILABLE:
+            raise ImportError(
+                "azure-storage-blob is not installed. "
+                "Install with: pip install azure-storage-blob"
+            )
+        if not self.azure_blob_connection_string:
+            raise ValueError(
+                "AZURE_STORAGE_CONNECTION_STRING is required for blob-backed table exports"
+            )
+
+        self._blob_service_client = BlobServiceClient.from_connection_string(
+            self.azure_blob_connection_string
+        )
+        self._blob_container_client = self._blob_service_client.get_container_client(
+            self.azure_blob_container_name
+        )
+        if not self._blob_container_client.exists():
+            self._blob_container_client.create_container()
+
+    def _upload_csv_to_blob(self, blob_name: str, rows: List[List[str]]) -> str:
+        """Upload CSV rows to blob and return blob path string."""
+        if not self._blob_container_client:
+            raise RuntimeError("Blob container client is not initialized")
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        for row in rows:
+            clean_row = [str(cell).strip() if cell is not None else "" for cell in row]
+            writer.writerow(clean_row)
+
+        blob_path = f"{self.tables_blob_prefix}/{blob_name}"
+        blob_client = self._blob_container_client.get_blob_client(blob=blob_path)
+        blob_client.upload_blob(buffer.getvalue().encode("utf-8"), overwrite=True)
+        return f"azure-blob://{self.azure_blob_container_name}/{blob_path}"
     
     def detect_tables_in_text(self, text: str) -> bool:
         """Detect if text contains table-like structures.
@@ -161,30 +216,12 @@ class PDFTextExtractor:
         table_index: int,
         schema_key: str
     ) -> str:
-        """Write a table to CSV and return the relative file path."""
-        self.tables_output_dir.mkdir(parents=True, exist_ok=True)
-        if schema_key == "no_header":
-            filename = f"{pdf_stem}_table_{table_index}_no_header.csv"
-        else:
-            filename = f"table_schema_{schema_key}.csv"
-        output_path = self.tables_output_dir / filename
-
-        write_header = True
-        if schema_key in self._table_schema_paths and output_path.exists():
-            write_header = False
-
-        mode = "a" if output_path.exists() else "w"
-        with open(output_path, mode, newline="", encoding="utf-8") as csvfile:
-            writer = csv.writer(csvfile)
-            for row_idx, row in enumerate(table):
-                clean_row = [str(cell).strip() if cell is not None else "" for cell in row]
-                if row_idx == 0 and not write_header:
-                    continue
-                writer.writerow(clean_row)
-
-        self._table_schema_paths[schema_key] = str(output_path.as_posix())
-
-        return str(output_path.as_posix())
+        """Write a table CSV to Azure Blob and return the blob URI."""
+        schema_part = schema_key[:12] if schema_key else "no_header"
+        filename = f"{pdf_stem}_p{page_num}_t{table_index}_{schema_part}.csv"
+        blob_uri = self._upload_csv_to_blob(filename, table)
+        self._table_schema_paths[schema_key] = blob_uri
+        return blob_uri
 
     def write_merit_table_to_csv(
         self,
@@ -193,18 +230,9 @@ class PDFTextExtractor:
         page_num: int,
         table_index: int
     ) -> str:
-        """Append merit list tables into a single CSV without schema checks."""
-        self.tables_output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = self.tables_output_dir / "merit_list_tables.csv"
-
-        mode = "a" if output_path.exists() else "w"
-        with open(output_path, mode, newline="", encoding="utf-8") as csvfile:
-            writer = csv.writer(csvfile)
-            for row in table:
-                clean_row = [str(cell).strip() if cell is not None else "" for cell in row]
-                writer.writerow(clean_row)
-
-        return str(output_path.as_posix())
+        """Write merit list table CSV to Azure Blob and return the blob URI."""
+        filename = f"{pdf_stem}_p{page_num}_t{table_index}_merit.csv"
+        return self._upload_csv_to_blob(filename, table)
     
     def format_table_as_markdown(self, table: List[List[str]]) -> str:
         """Format table data as markdown for better chunking.
@@ -631,29 +659,43 @@ class PDFTextExtractor:
             raise RuntimeError("Azure Document Intelligence client not initialized")
         
         logger.info(f"Analyzing PDF with Azure Document Intelligence: {self.pdf_path}")
-        
+
         try:
-            # Read PDF file
             with open(path, "rb") as f:
                 pdf_bytes = f.read()
-            
-            # Analyze document with layout model (best for general documents with tables)
+            return self._extract_text_from_azure_pdf_bytes(
+                pdf_bytes=pdf_bytes,
+                source_name=path.name,
+                source_reference=str(path),
+            )
+
+        except Exception as e:
+            logger.error(f"Azure Document Intelligence extraction failed for {self.pdf_path}: {e}")
+            raise RuntimeError(f"Azure extraction failed: {e}") from e
+
+    def _extract_text_from_azure_pdf_bytes(
+        self,
+        pdf_bytes: bytes,
+        source_name: str,
+        source_reference: str,
+    ) -> List[Document]:
+        """Extract text from PDF bytes using Azure Document Intelligence."""
+        try:
             poller = self.azure_client.begin_analyze_document(
-                model_id="prebuilt-layout",  # Use layout model for tables and structure
+                model_id="prebuilt-layout",
                 body=pdf_bytes,
                 content_type="application/pdf",
-                output_content_format=DocumentContentFormat.MARKDOWN , # Get markdown output
-                # body={"include_text_content": True, "include_tables": True}
+                output_content_format=DocumentContentFormat.MARKDOWN,
             )
-            
+
             result = poller.result()
-            logger.info(f"Azure analysis complete for {path.name}")
+            logger.info(f"Azure analysis complete for {source_name}")
             
             # Classify document type
             sample_text = result.content[:1000] if result.content else ""
-            doc_type = self.classify_pdf_document(sample_text, path.name)
+            doc_type = self.classify_pdf_document(sample_text, source_name)
             
-            if "merit" in path.name.lower():
+            if "merit" in source_name.lower():
                 doc_type = "merit_list"
             
             if doc_type == "merit_list" and self.skip_merit_lists:
@@ -662,9 +704,6 @@ class PDFTextExtractor:
             
             # Extract metadata from content
             extracted_metadata = self.extract_metadata_from_pdf_text(sample_text)
-            
-            # Create tables directory
-            self.tables_output_dir.mkdir(parents=True, exist_ok=True)
             
             # Process tables if present
             table_documents: List[Document] = []
@@ -722,8 +761,8 @@ class PDFTextExtractor:
                         Document(
                             page_content=formatted_table,
                             metadata={
-                                "source": str(path),
-                                "filename": path.name,
+                                "source": source_reference,
+                                "filename": source_name,
                                 "doc_type": doc_type,
                                 "page": page_num,
                                 "table_index": table_idx,
@@ -762,8 +801,8 @@ class PDFTextExtractor:
                     page_doc = Document(
                         page_content=page_text,
                         metadata={
-                            "source": str(path),
-                            "filename": path.name,
+                            "source": source_reference,
+                            "filename": source_name,
                             "doc_type": doc_type,
                             "page_number": page_num,
                             "has_table": has_table,
@@ -781,8 +820,8 @@ class PDFTextExtractor:
                 page_doc = Document(
                     page_content=result.content,
                     metadata={
-                        "source": str(path),
-                        "filename": path.name,
+                            "source": source_reference,
+                            "filename": source_name,
                         "doc_type": doc_type,
                         "source_type": "pdf",
                         "university": self.university,
@@ -816,15 +855,60 @@ class PDFTextExtractor:
                     self.extracted_text.extend(table_documents)
             
             logger.info(
-                f"✅ Extracted from {self.pdf_path} using Azure: {len(self.extracted_text)} chunks "
+                f"✅ Extracted from {source_name} using Azure: {len(self.extracted_text)} chunks "
                 f"(Type: {doc_type}, Tables: {len(result.tables) if result.tables else 0})"
             )
             
             return self.extracted_text
             
         except Exception as e:
-            logger.error(f"Azure Document Intelligence extraction failed for {self.pdf_path}: {e}")
+            logger.error(f"Azure Document Intelligence extraction failed for {source_name}: {e}")
             raise RuntimeError(f"Azure extraction failed: {e}") from e
+
+    def extract_multiple_pdfs_from_urls(self, pdf_urls: List[str]) -> List[Document]:
+        """Extract PDF text directly from URLs without writing files locally.
+
+        This method is Azure-only because open-source extraction expects filesystem paths.
+        """
+        if self.extraction_method != "azure":
+            raise ValueError("URL-based extraction without local files is only supported for extraction_method='azure'")
+
+        if not pdf_urls:
+            logger.warning("No PDF URLs provided for extraction")
+            return []
+
+        all_chunks: List[Document] = []
+        successful = 0
+        failed = 0
+        seen = set()
+
+        for url in pdf_urls:
+            if not url or url in seen:
+                continue
+            seen.add(url)
+
+            try:
+                response = requests.get(url, timeout=60)
+                response.raise_for_status()
+                filename = Path(url.split("?")[0]).name or "document.pdf"
+                chunks = self._extract_text_from_azure_pdf_bytes(
+                    pdf_bytes=response.content,
+                    source_name=filename,
+                    source_reference=url,
+                )
+                all_chunks.extend(chunks)
+                successful += 1
+            except Exception as e:
+                logger.error("Failed to process PDF URL %s: %s", url, e)
+                failed += 1
+
+        logger.info(
+            "Completed URL PDF extraction: %d successful, %d failed, %d total chunks",
+            successful,
+            failed,
+            len(all_chunks),
+        )
+        return all_chunks
     
     def _convert_azure_table_to_list(self, table) -> List[List[str]]:
         """Convert Azure Document Intelligence table to list of lists format.

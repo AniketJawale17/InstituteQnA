@@ -35,13 +35,15 @@ logger = logging.getLogger(__name__)
 def display_checkpoint_info():
     """Display Azure Blob checkpoint destination details."""
     container = os.getenv("AZURE_STORAGE_CONTAINER_NAME", "qna-checkpoints")
+    runs_prefix = os.getenv("AZURE_RUNS_BLOB_PREFIX", "processing_runs")
     print("\n" + "="*80)
     print("CHECKPOINT DESTINATION")
     print("="*80)
     print("📦 Azure Blob Storage")
     print(f"   Container: {container}")
-    print("   Folder format per run: <timestamp>/")
-    print("   Example: 20260219_220501/06_final_combined_20260219_220501.json")
+    print(f"   Run folder format: {runs_prefix}/<timestamp>/")
+    print("   Checkpoints folder: <run>/checkpoints/")
+    print("   Example: processing_runs/20260219_220501/checkpoints/06_final_combined_20260219_220501.json")
     print("\n" + "="*80)
 
 
@@ -71,8 +73,8 @@ def main_pipeline():
         print("💡 NEXT STEPS")
         print("="*80)
         print("To create embeddings, you can:")
-        print("  1. Chroma: create_embeddings_in_batches(structured_docs)")
-        print("  2. Azure AI Search: store_documents_in_vector_backend(structured_docs, backend='azure_ai_search')")
+        print("  1. Azure AI Search (default): store_documents_in_vector_backend(structured_docs)")
+        print("  2. Chroma (optional): create_embeddings_in_batches(structured_docs)")
         print("  3. Or uncomment one option below in this script")
         print()
         

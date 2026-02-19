@@ -6,10 +6,17 @@ import tempfile
 from pathlib import Path
 from typing import Any, Union, Optional
 import logging
+import os
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from markdownify import markdownify as md
+
+try:
+	from azure.storage.blob import BlobServiceClient
+	AZURE_BLOB_AVAILABLE = True
+except ModuleNotFoundError:
+	AZURE_BLOB_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +60,22 @@ class WebBasedLoader:
 
 	@staticmethod
 	def write_json_atomic(path: Union[str, Path], data_obj, *, indent: Optional[int] = 2, ensure_ascii: bool = False):
-		"""Write a JSON object to a file atomically to avoid partial writes."""
-		path = Path(path)
-		path.parent.mkdir(parents=True, exist_ok=True)
-		with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(path.parent)) as tmp:
-			json.dump(data_obj, tmp, ensure_ascii=ensure_ascii, indent=indent)
-			tmp.flush()
-		Path(tmp.name).replace(path)
+		"""Upload JSON payload to Azure Blob using the provided path as blob name."""
+		if not AZURE_BLOB_AVAILABLE:
+			raise ImportError("azure-storage-blob is not installed")
+
+		conn = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+		container = os.getenv("AZURE_STORAGE_CONTAINER_NAME", "qna-checkpoints")
+		if not conn:
+			raise ValueError("AZURE_STORAGE_CONNECTION_STRING is required for blob-backed writes")
+
+		blob_name = str(path).lstrip("/")
+		payload = json.dumps(data_obj, ensure_ascii=ensure_ascii, indent=indent).encode("utf-8")
+		service = BlobServiceClient.from_connection_string(conn)
+		container_client = service.get_container_client(container)
+		if not container_client.exists():
+			container_client.create_container()
+		container_client.get_blob_client(blob=blob_name).upload_blob(payload, overwrite=True)
 
 
 	@staticmethod

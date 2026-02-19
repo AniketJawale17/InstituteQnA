@@ -9,11 +9,9 @@ from pathlib import Path
 import os
 import uvicorn
 from dotenv import load_dotenv
-from institute_qna import WebBasedLoader
-from institute_qna.data_preprocess.extract_pdf_text import PDFTextExtractor
+from institute_qna.data_preprocess.knoweldge_base_creation import main as generate_knowledge_base
 from institute_qna.rag import RAGPipeline
 from institute_qna.logging_config import configure_logging
-import pandas as pd
 from difflib import SequenceMatcher
 
 load_dotenv()
@@ -56,6 +54,10 @@ class BatchQueryRequest(BaseModel):
     questions: List[str]
     top_k: Optional[int] = 5
     return_sources: Optional[bool] = False
+
+
+class KnowledgeBaseGenerateRequest(BaseModel):
+    extraction_method: Optional[str] = "azure"
 
 # Initialize RAG Pipeline (lazy loading)
 rag_pipeline: Optional[RAGPipeline] = None
@@ -100,41 +102,31 @@ async def chat_ui() -> HTMLResponse:
     return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
 
-@app.post("/Extract")
-
-async def extract() -> dict:
-    
+@app.post("/knowledge_base/generate")
+async def knowledge_base_generate(request: KnowledgeBaseGenerateRequest) -> dict:
+    """Generate full knowledge base (web + attachment PDFs + structuring) in one route."""
     try:
-        url = "https://www.coeptech.ac.in/admissions/undergraduate/"
-        WebBasedLoader.load_html_markdown_from_url(url)
-        
-        logger.info("Generated admission data json in extracted text data")
-        
-        return {"Status": "Success"}
-    except Exception as e:
-        # Log full stack and return a 500-like message
-        logger.exception("Unexpected error occurred while extracting data",e)
-        # Re-raise so FastAPI returns a 500 response (or you can return a custom response)
-        return {"Error" : str(e)}
-    
+        extraction_method = (request.extraction_method or "azure").strip().lower()
+        if extraction_method not in {"azure", "opensource"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid extraction_method. Use 'azure' or 'opensource'.",
+            )
 
-@app.post("/Process")
-async def process(pdf_path_folder : str) -> dict:
-    try:
-        # Call the PDF text extraction method
-        extracted_text = []
-        for pdf_file in os.listdir(pdf_path_folder):
-            if pdf_file.endswith(".pdf"):
-                pdf_path = os.path.join(pdf_path_folder, pdf_file)
-                extracted_text += PDFTextExtractor.extract_text_from_text_pdf(pdf_path)
-                logger.info("Extracted text from text-based PDF: %s", pdf_file)
-        df = pd.DataFrame([docs.page_content for docs in extracted_text], columns=["Extracted_Text"])
-        df.to_csv("extracted_text_data/extracted_pdf_text.csv", index=False)
-        logger.info("Saved extracted text to CSV file")
-        return {"Status": "Success", "Data": extracted_text}
+        docs = generate_knowledge_base(extraction_method=extraction_method)
+        logger.info(
+            "Knowledge base generation completed with method '%s' and %d documents",
+            extraction_method,
+            len(docs),
+        )
+        return {
+            "status": "success",
+            "extraction_method": extraction_method,
+            "total_documents": len(docs),
+        }
     except Exception as e:
-        logger.exception("Unexpected error occurred while processing PDF", e)
-        return {"Error": str(e)}
+        logger.exception("Unexpected error occurred while generating knowledge base", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/query", response_model=QueryResponse)

@@ -1,521 +1,21 @@
-"""Knowledge Base Creation Module.
+"""Knowledge base creation pipeline orchestration.
 
-This module structures extracted text from PDFs and websites into a format 
-suitable for knowledge base creation and vector embedding.
-
-Complete Pipeline:
-1. Web scraping (data extraction)
-2. Attachment downloading (PDFs, docs)
-3. Document processing and cleaning
-4. Chunking and deduplication
-5. Checkpointing at each step
-6. Embedding generation
+Main flow lives in this file. Reusable class and helper logic are located in
+`knoweldge_base_creation_utils.py`.
 """
 
-from institute_qna.data_preprocess.extract_pdf_text import PDFTextExtractor
-from institute_qna.data_extraction.webscrapper import WebBasedLoader
-from institute_qna.data_extraction.download_attachment import AttachmentDownloader
-
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.documents import Document 
-try:
-    from azure.storage.blob import BlobServiceClient
-    AZURE_BLOB_AVAILABLE = True
-except ModuleNotFoundError:
-    AZURE_BLOB_AVAILABLE = False
-
-import json
-import re
-import hashlib
-import os
-from pathlib import Path
-from typing import List, Set, Optional
 import logging
-from time import sleep
 from datetime import datetime
-from dotenv import load_dotenv
+from time import sleep
+from typing import List
 
-load_dotenv()
+from langchain_core.documents import Document
+
+from institute_qna.data_extraction.download_attachment import AttachmentDownloader
+from institute_qna.data_extraction.webscrapper import WebBasedLoader
+from institute_qna.data_preprocess.knoweldge_base_creation_utils import KnowledgeBaseCreation
+
 logger = logging.getLogger(__name__)
-
-
-class KnowledgeBaseCreation(PDFTextExtractor):
-    """Generates Knowledge base through structuring extracted text.
-    
-    This class processes both PDF documents and web-scraped data, structuring
-    them into a unified format suitable for embedding and retrieval.
-    
-    Includes checkpoint saving at each step to prevent data loss.
-    """
-    
-    # Common UI patterns to remove from markdown content
-    NOISE_PATTERNS = [
-        r'\[.*?Login.*?\]\(.*?\)',  # Login links
-        r'Accessibility Tools',
-        r'\* Invert colors.*?Letter spacing\s+100%',  # Accessibility menu
-        r'Search\s+Search',
-        r'\[-A\].*?\[\+A\]',  # Font size controls
-        r'Menu\n',
-        r'Skip to content',
-        r'Copyright.*?All rights reserved.*',
-        r'Best Viewed in.*?\d+ x \d+.*',
-        r'\d+\n\d+\n\d+\n\d+ Visitors',  # Visitor counter
-    ]
-    
-    def __init__(
-        self,
-        checkpoint_dir: str = "extracted_text_data/checkpoints",
-        university: str = "coep",
-        extraction_method: str = "azure",
-        run_timestamp: Optional[str] = None,
-    ):
-        """Initialize the Knowledge Base Creation class.
-        
-        Args:
-            checkpoint_dir: Directory to save checkpoint files
-            university: University identifier for metadata
-            extraction_method: PDF extraction method - 'opensource'  or 'azure'
-        """
-        super().__init__(university=university, extraction_method=extraction_method)
-        self.structured_documents: List[Document] = []
-        self._seen_content_hashes: Set[str] = set()
-        self.checkpoint_dir = Path(checkpoint_dir)
-        self.university = university
-        self.extraction_method = extraction_method
-        self.run_timestamp = run_timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        self.azure_blob_connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-        self.azure_blob_container_name = os.getenv("AZURE_STORAGE_CONTAINER_NAME", "qna-checkpoints")
-        self._blob_service_client = None
-        self._blob_container_client = None
-        logger.info(f"Checkpoint directory: {self.checkpoint_dir}")
-        logger.info(f"PDF extraction method: {self.extraction_method}")
-        logger.info(f"Checkpoint run timestamp: {self.run_timestamp}")
-        self._initialize_blob_container()
-
-    def _initialize_blob_container(self) -> None:
-        """Initialize Azure Blob Storage container used for checkpoints."""
-        if not AZURE_BLOB_AVAILABLE:
-            raise ImportError(
-                "azure-storage-blob is not installed. "
-                "Install it with: pip install azure-storage-blob"
-            )
-
-        if not self.azure_blob_connection_string:
-            raise ValueError(
-                "AZURE_STORAGE_CONNECTION_STRING is not set. "
-                "Checkpoint uploads require Azure Blob Storage configuration."
-            )
-
-        self._blob_service_client = BlobServiceClient.from_connection_string(
-            self.azure_blob_connection_string
-        )
-        self._blob_container_client = self._blob_service_client.get_container_client(
-            self.azure_blob_container_name
-        )
-        if not self._blob_container_client.exists():
-            self._blob_container_client.create_container()
-            logger.info(
-                "Created Azure Blob container for checkpoints: %s",
-                self.azure_blob_container_name,
-            )
-    
-    def save_checkpoint(self, data: any, step_name: str, timestamp: Optional[str] = None) -> str:
-        """Save checkpoint data to Azure Blob Storage.
-        
-        Args:
-            data: Data to save (list, dict, etc.)
-            step_name: Name of the processing step
-            timestamp: Optional timestamp string, defaults to current time
-            
-        Returns:
-            Blob path for saved checkpoint
-        """
-        if timestamp is None:
-            timestamp = self.run_timestamp
-
-        checkpoint_file_name = f"{step_name}_{timestamp}.json"
-        blob_path = f"{timestamp}/{checkpoint_file_name}"
-        
-        try:
-            # Convert Documents to serializable format if needed
-            if isinstance(data, list) and data and isinstance(data[0], Document):
-                serializable_data = [
-                    {
-                        "page_content": doc.page_content,
-                        "metadata": doc.metadata
-                    }
-                    for doc in data
-                ]
-            else:
-                serializable_data = data
-
-            payload = json.dumps(serializable_data, indent=2, ensure_ascii=False).encode("utf-8")
-            blob_client = self._blob_container_client.get_blob_client(blob=blob_path)
-            blob_client.upload_blob(payload, overwrite=True)
-
-            logger.info(
-                "✅ Checkpoint uploaded to Azure Blob: %s/%s (%s items)",
-                self.azure_blob_container_name,
-                blob_path,
-                len(data) if isinstance(data, list) else 'N/A',
-            )
-            return blob_path
-        except Exception as e:
-            logger.error(f"Failed to save checkpoint {step_name}: {e}")
-            raise
-
-    def clear_tables_checkpoint_dir(self) -> None:
-        """Remove existing table CSVs to avoid duplicates between runs."""
-        tables_dir = Path(self.tables_output_dir)
-        if not tables_dir.exists():
-            return
-        for entry in tables_dir.iterdir():
-            if entry.is_file():
-                entry.unlink()
-    
-
-    def load_checkpoint(self, checkpoint_file: str, as_documents: bool = False) -> any:
-        """Load data from a blob checkpoint path.
-        
-        Args:
-            checkpoint_file: Path to checkpoint file
-            as_documents: If True, convert data back to Document objects
-            
-        Returns:
-            Loaded data
-        """
-        try:
-            blob_client = self._blob_container_client.get_blob_client(blob=checkpoint_file)
-            payload = blob_client.download_blob().readall().decode("utf-8")
-            data = json.loads(payload)
-            
-            if as_documents and isinstance(data, list):
-                documents = [
-                    Document(
-                        page_content=item.get('page_content', ''),
-                        metadata=item.get('metadata', {})
-                    )
-                    for item in data
-                ]
-                logger.info(f"Loaded {len(documents)} documents from checkpoint")
-                return documents
-            
-            logger.info(f"Loaded checkpoint from Azure Blob path {checkpoint_file}")
-            return data
-        except Exception as e:
-            logger.error(f"Failed to load checkpoint {checkpoint_file}: {e}")
-            raise
-
-    def structure_documents(self, extracted_docs: List[Document]) -> List[Document]:
-        """Structure extracted text into properly formatted Documents.
-        
-        Args:
-            extracted_docs: List of extracted Document objects
-            
-        Returns:
-            List of structured Document objects with normalized metadata
-        """
-        if not extracted_docs:
-            logger.warning("No documents to structure")
-            return []
-        
-        logger.info(f"Structuring {len(extracted_docs)} documents...")
-        
-        structured = []
-        for idx, doc in enumerate(extracted_docs):
-            try:
-                content = doc.page_content
-                metadata = dict(doc.metadata) if doc.metadata else {}
-
-                source = metadata.get("source", "unknown")
-                page = metadata.get("page")
-
-                metadata.update({
-                    "source": source,
-                    "page": str(page) if page is not None else None,
-                    "university": self.university,
-                })
-
-                structured.append(Document(page_content=content, metadata=metadata))
-            except Exception as e:
-                logger.warning(f"Failed to structure document {idx}: {e}")
-                continue
-        
-        logger.info(f"Successfully structured {len(structured)} documents")
-        return structured
-    
-    def clean_markdown_content(self, content: str) -> str:
-        """Clean markdown content by removing navigation, UI elements, and noise.
-        
-        Args:
-            content: Raw markdown text from web scraping
-            
-        Returns:
-            Cleaned markdown content focused on actual information
-        """
-        # Remove common noise patterns
-        cleaned = content
-        for pattern in self.NOISE_PATTERNS:
-            cleaned = re.sub(pattern, '', cleaned, flags=re.DOTALL | re.IGNORECASE)
-        
-        # Remove excessive navigation menus (keep only first occurrence)
-        lines = cleaned.split('\n')
-        seen_lines = {}
-        filtered_lines = []
-        
-        for line in lines:
-            # Skip empty lines in deduplication but keep them in output
-            if not line.strip():
-                filtered_lines.append(line)
-                continue
-                
-            # For navigation-like lines, only keep first occurrence
-            if line.strip().startswith('*') or line.strip().startswith('-'):
-                line_hash = hashlib.md5(line.encode()).hexdigest()
-                if line_hash in seen_lines:
-                    continue
-                seen_lines[line_hash] = True
-            
-            filtered_lines.append(line)
-        
-        cleaned = '\n'.join(filtered_lines)
-        
-        # Remove long OAuth/redirect URLs
-        cleaned = re.sub(r'https?://[^\s\)]{200,}', '[URL]', cleaned)
-        
-        # Remove multiple consecutive blank lines
-        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-        
-        return cleaned.strip()
-    
-    def classify_document_type(self, content: str, source: str, title: str) -> str:
-        """Classify document type based on content and metadata.
-        
-        Args:
-            content: Document content
-            source: Source URL or file path
-            title: Document title
-            
-        Returns:
-            Document type classification
-        """
-        content_lower = content.lower()
-        source_lower = source.lower()
-        title_lower = title.lower() if title else ''
-        
-        if any(term in content_lower or term in source_lower or term in title_lower 
-               for term in ['fee', 'fees', 'payment', 'tuition']):
-            return 'fees'
-        elif any(term in content_lower or term in source_lower 
-                 for term in ['admission', 'apply', 'eligibility', 'entrance']):
-            return 'admissions'
-        elif any(term in source_lower for term in ['brochure', 'flyer']):
-            return 'brochure'
-        elif any(term in content_lower for term in ['contact', 'email', 'phone', 'address']):
-            return 'contact'
-        elif any(term in content_lower for term in ['program', 'course', 'curriculum', 'b.tech', 'm.tech']):
-            return 'programs'
-        elif any(term in content_lower for term in ['manual', 'guide', 'instruction']):
-            return 'manual'
-        else:
-            return 'general'
-    
-    def extract_metadata_from_content(self, content: str) -> dict:
-        """Extract structured metadata from content.
-        
-        Args:
-            content: Document content
-            
-        Returns:
-            Dictionary with extracted metadata
-        """
-        metadata = {}
-        
-        # Extract dates
-        date_patterns = [
-            r'\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b',
-            r'\b((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? \d{4})\b',
-        ]
-        dates = []
-        for pattern in date_patterns:
-            dates.extend(re.findall(pattern, content, re.IGNORECASE))
-        if dates:
-            metadata['dates'] = list(set(dates[:5]))
-        
-        # Extract emails
-        emails = re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', content)
-        if emails:
-            metadata['emails'] = list(set(emails[:3]))
-        
-        # Extract phone numbers
-        phones = re.findall(r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b|\b\d{10}\b', content)
-        if phones:
-            metadata['phones'] = list(set(phones[:3]))
-        
-        return metadata
-    
-    def deduplicate_chunks(self, chunks: List[Document]) -> List[Document]:
-        """Remove duplicate or near-duplicate chunks.
-        
-        Args:
-            chunks: List of document chunks
-            
-        Returns:
-            Deduplicated list of chunks
-        """
-        unique_chunks = []
-        buckets = {}
-
-        def normalize_for_similarity(text: str) -> str:
-            text = re.sub(r"\s+", " ", text.lower()).strip()
-            text = re.sub(r"\d+", "0", text)
-            return text
-
-        def shingle_hashes(text: str, size: int = 5) -> set:
-            tokens = text.split()
-            if not tokens:
-                return set()
-            if len(tokens) <= size:
-                joined = " ".join(tokens)
-                return {hashlib.md5(joined.encode("utf-8")).hexdigest()}
-            hashes = set()
-            for i in range(len(tokens) - size + 1):
-                shingle = " ".join(tokens[i:i + size])
-                hashes.add(hashlib.md5(shingle.encode("utf-8")).hexdigest())
-            return hashes
-
-        def jaccard_similarity(a: set, b: set) -> float:
-            if not a or not b:
-                return 0.0
-            return len(a & b) / len(a | b)
-
-        for chunk in chunks:
-            normalized = normalize_for_similarity(chunk.page_content)
-            content_hash = hashlib.md5(normalized.encode("utf-8")).hexdigest()
-
-            if content_hash in self._seen_content_hashes:
-                logger.debug(f"Skipping duplicate chunk from {chunk.metadata.get('source', 'unknown')}")
-                continue
-
-            shingles = shingle_hashes(normalized)
-            length_bucket = max(1, len(normalized) // 200)
-            bucket = buckets.setdefault(length_bucket, [])
-
-            is_near_duplicate = False
-            for candidate in bucket[-200:]:
-                similarity = jaccard_similarity(shingles, candidate["shingles"])
-                if similarity >= 0.95:
-                    is_near_duplicate = True
-                    break
-
-            if is_near_duplicate:
-                logger.debug(f"Skipping near-duplicate chunk from {chunk.metadata.get('source', 'unknown')}")
-                continue
-
-            self._seen_content_hashes.add(content_hash)
-            bucket.append({"shingles": shingles})
-            unique_chunks.append(chunk)
-
-        logger.info(f"Deduplicated {len(chunks)} chunks to {len(unique_chunks)} unique chunks")
-        return unique_chunks
-
-    def website_structure_documents(self, webdata_file_name: str) -> List[Document]:
-        """Structure extracted text from website into properly formatted Documents.
-        
-        Args:
-            webdata_file_name: Path to JSON file containing web-scraped data
-            
-        Returns:
-            List of structured Document objects from website content
-            
-        Raises:
-            FileNotFoundError: If JSON file doesn't exist
-            json.JSONDecodeError: If JSON file is invalid
-        """
-        json_path = Path(webdata_file_name)
-        
-        if not json_path.exists():
-            logger.error(f"Web data file not found: {webdata_file_name}")
-            raise FileNotFoundError(f"Web data file not found: {webdata_file_name}")
-
-        logger.info(f"Loading web data from {webdata_file_name}")
-        
-        try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON file {webdata_file_name}: {e}")
-            raise
-        
-        if not raw:
-            logger.warning(f"No data found in {webdata_file_name}")
-            return []
-
-        logger.info(f"Processing {len(raw)} web documents...")
-        
-        pages = []
-        for idx, doc in enumerate(raw):
-            try:
-                raw_content = doc.get('metadata', {}).get('markdowntext', '')
-                source = doc.get('metadata', {}).get('source', 'unknown')
-                title = doc.get('metadata', {}).get('title', '')
-                
-                # Clean the markdown content
-                cleaned_content = self.clean_markdown_content(raw_content)
-                
-                # Skip if content is too short after cleaning
-                if len(cleaned_content.strip()) < 100:
-                    logger.warning(f"Skipping document {idx} - too short after cleaning")
-                    continue
-                
-                # Classify document type
-                doc_type = self.classify_document_type(cleaned_content, source, title)
-                
-                # Extract additional metadata
-                extracted_metadata = self.extract_metadata_from_content(cleaned_content)
-                
-                # Use offset to differentiate web docs from PDF docs
-                doc_id = idx + 5000
-                
-                pages.append(
-                    Document(
-                        id=doc_id,
-                        page_content=cleaned_content,
-                        metadata={
-                            "source": source,
-                            "title": title,
-                            "page": title,
-                            "doc_type": doc_type,
-                            "source_type": "web",
-                            "university": self.university,
-                            **extracted_metadata
-                        }
-                    )
-                )
-            except Exception as e:
-                logger.warning(f"Failed to process web document {idx}: {e}")
-                continue
-
-        logger.info(f"Loaded {len(pages)} pages from website data (after cleaning)")
-        
-        # Split web pages into chunks with markdown-aware separators
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap,
-            length_function=len,
-            # Markdown-aware separators - preserve structure
-            separators=["\n## ", "\n### ", "\n#### ", "\n\n", "\n", ". ", " ", ""],
-        )
-
-        docs = splitter.split_documents(pages)
-        logger.info(f"Split web data into {len(docs)} chunks (before deduplication)")
-        
-        # Deduplicate chunks
-        docs = self.deduplicate_chunks(docs)
-
-        structured = self.structure_documents(docs)
-        return structured
 
 
 def main(extraction_method: str = "azure") -> List[Document]:
@@ -546,9 +46,6 @@ def main(extraction_method: str = "azure") -> List[Document]:
         run_timestamp=timestamp,
     )
 
-    # Clear previous table CSVs to avoid duplicates
-    obj.clear_tables_checkpoint_dir()
-    
     # ========== STEP 1: WEB SCRAPING ==========
     logger.info("\n" + "="*80)
     logger.info("STEP 1: WEB SCRAPING")
@@ -593,23 +90,11 @@ def main(extraction_method: str = "azure") -> List[Document]:
 
 
 
-        # Convert documents to serializable shape and write to file
+        # Convert documents to serializable shape in-memory
         serializable = WebBasedLoader.documents_to_serializable(data)
-        out_path = "extracted_text_data/admissions_data.json"
-        WebBasedLoader.write_json_atomic(out_path, serializable)
-        logger.info("Wrote %d documents to %s", len(serializable), out_path)
-        
-
-        # Save web scraping checkpoint
-        web_data_path = Path("extracted_text_data/admissions_data.json")
-        if web_data_path.exists():
-            with open(web_data_path, 'r', encoding='utf-8') as f:
-                web_data = json.load(f)
-            obj.save_checkpoint(web_data, "01_web_scraping", timestamp)
-            logger.info(f"✅ Web scraping complete: {len(web_data)} pages extracted")
-        else:
-            logger.warning("Web scraping completed but admissions_data.json not found")
-            web_data = []
+        web_data = serializable
+        obj.save_checkpoint(web_data, "01_web_scraping", timestamp)
+        logger.info(f"✅ Web scraping complete: {len(web_data)} pages extracted")
     except Exception as e:
         logger.error(f"Failed to scrape websites: {e}")
         web_data = []
@@ -620,21 +105,17 @@ def main(extraction_method: str = "azure") -> List[Document]:
     logger.info("="*80)
     
     try:
-        json_path = Path("extracted_text_data/admissions_data.json")
-        if json_path.exists():
-            logger.info("Scanning web data for downloadable attachments...")
-            downloader = AttachmentDownloader()
-            downloader.download_all_attachments(json_path)
-            
-            # Reload and checkpoint the updated JSON with attachment metadata
-            with open(json_path, 'r', encoding='utf-8') as f:
-                web_data_with_attachments = json.load(f)
+        if web_data:
+            logger.info("Scanning web data for downloadable attachments (in-memory)...")
+            web_data_with_attachments = AttachmentDownloader.augment_documents_with_attachment_links(web_data)
             obj.save_checkpoint(web_data_with_attachments, "02_attachments_downloaded", timestamp)
-            logger.info("✅ Attachment downloading complete")
+            logger.info("✅ Attachment link enrichment complete")
         else:
-            logger.warning("Cannot download attachments - admissions_data.json not found")
+            logger.warning("Cannot scan attachments - no web data available")
+            web_data_with_attachments = []
     except Exception as e:
         logger.error(f"Failed to download attachments: {e}")
+        web_data_with_attachments = web_data
     
     # ========== STEP 3: PROCESS PDF DOCUMENTS ==========
     logger.info("\n" + "="*80)
@@ -642,8 +123,17 @@ def main(extraction_method: str = "azure") -> List[Document]:
     logger.info("="*80)
     
     try:
-        logger.info("Extracting text from PDFs in attachments/ directory...")
-        extracted_docs = obj.extract_multiple_pdfs("attachments/")
+        logger.info("Extracting text from PDF attachment URLs without local file writes...")
+        attachment_urls = []
+        for item in web_data_with_attachments:
+            metadata = item.get("metadata", {}) if isinstance(item, dict) else {}
+            links = metadata.get("attachments", [])
+            for link in links:
+                link_lower = str(link).lower()
+                if ".pdf" in link_lower:
+                    attachment_urls.append(link)
+
+        extracted_docs = obj.extract_multiple_pdfs_from_urls(attachment_urls)
         
         # Save raw extracted PDF documents
         obj.save_checkpoint(extracted_docs, "03_pdf_extraction_raw", timestamp)
@@ -678,9 +168,7 @@ def main(extraction_method: str = "azure") -> List[Document]:
     
     try:
         logger.info("Cleaning and structuring web data...")
-        web_structured_docs = obj.website_structure_documents(
-            "extracted_text_data/admissions_data.json"
-        )
+        web_structured_docs = obj.website_structure_documents(web_data_with_attachments)
         obj.save_checkpoint(web_structured_docs, "05_web_structured", timestamp)
         logger.info(f"✅ Web data processing complete: {len(web_structured_docs)} documents")
     except Exception as e:
@@ -707,6 +195,9 @@ def main(extraction_method: str = "azure") -> List[Document]:
     # Also save a human-readable summary
     summary = {
         "timestamp": timestamp,
+        "run_blob_folder": obj.run_blob_folder,
+        "checkpoints_blob_folder": obj.checkpoints_blob_folder,
+        "extraction_processing_blob_folder": f"{obj.run_blob_folder}/extraction_processing",
         "total_documents": len(all_docs),
         "web_documents": len(web_structured_docs),
         "pdf_documents": len(structured_pdf_docs),
@@ -727,10 +218,12 @@ def main(extraction_method: str = "azure") -> List[Document]:
     logger.info("PIPELINE COMPLETE ✅")
     logger.info("="*80)
     logger.info(
-        "All checkpoints uploaded to Azure Blob container '%s' under folder '%s/'",
+        "Run data uploaded to Azure Blob container '%s' under folder '%s/'",
         obj.azure_blob_container_name,
-        timestamp,
+        obj.run_blob_folder,
     )
+    logger.info("Checkpoints folder: %s", obj.checkpoints_blob_folder)
+    logger.info("Extraction processing folder: %s/extraction_processing", obj.run_blob_folder)
     logger.info(f"Summary blob path: {summary_blob_path}")
     
     return all_docs

@@ -21,7 +21,14 @@ from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 import tempfile
 import os
+from typing import List, Dict, Any
 from institute_qna.logging_config import configure_logging
+
+try:
+    from azure.storage.blob import BlobServiceClient
+    AZURE_BLOB_AVAILABLE = True
+except ModuleNotFoundError:
+    AZURE_BLOB_AVAILABLE = False
 
 logger = getLogger(__name__)
 logger.setLevel(os.getenv("LOGGER_LEVEL","INFO"))
@@ -129,14 +136,25 @@ class AttachmentDownloader:
             if filename:
                 dest = dest.parent / filename
 
-        # write to a temp file then move (binary)
-        with tempfile.NamedTemporaryFile(delete=False, dir=str(dest.parent), prefix="tmp_dl_", mode="wb") as tmp:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    tmp.write(chunk)
-        tmp_path = Path(tmp.name)
-        tmp_path.replace(dest)
-        return dest
+        file_bytes = b"".join(chunk for chunk in r.iter_content(chunk_size=8192) if chunk)
+
+        if not (AZURE_BLOB_AVAILABLE and os.getenv("AZURE_STORAGE_CONNECTION_STRING")):
+            raise ValueError(
+                "Azure Blob Storage is required for attachment downloads. "
+                "Set AZURE_STORAGE_CONNECTION_STRING and install azure-storage-blob."
+            )
+
+        container = os.getenv("AZURE_STORAGE_CONTAINER_NAME", "qna-checkpoints")
+        attachment_prefix = os.getenv("AZURE_ATTACHMENTS_BLOB_PREFIX", "attachments")
+        blob_name = f"{attachment_prefix}/{dest.name}"
+
+        service = BlobServiceClient.from_connection_string(os.getenv("AZURE_STORAGE_CONNECTION_STRING"))
+        container_client = service.get_container_client(container)
+        if not container_client.exists():
+            container_client.create_container()
+
+        container_client.get_blob_client(blob=blob_name).upload_blob(file_bytes, overwrite=True)
+        return f"azure-blob://{container}/{blob_name}"
 
     @staticmethod
     def create_truncate_download_directory():
@@ -160,18 +178,55 @@ class AttachmentDownloader:
                 logger.warning("Failed to remove %s: %s", child, e, exc_info=True)
         logger.info("Cleaned download directory: %s", Config.DOWNLOAD_DIR)
 
+    @staticmethod
+    def augment_documents_with_attachment_links(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Attach resolved downloadable links to each document metadata in-memory.
+
+        This method does not write any local files and is intended for blob-first pipelines.
+        """
+        for idx, doc in enumerate(data):
+            html = doc.get("page_content", "")
+            source = doc.get("metadata", {}).get("source")
+            links = AttachmentDownloader.find_download_links(html)
+
+            resolved_links = []
+            for href in links:
+                if source:
+                    resolved_links.append(urljoin(source, href))
+                else:
+                    resolved_links.append(href)
+
+            if resolved_links:
+                meta = doc.setdefault("metadata", {})
+                meta["attachments"] = resolved_links
+                logger.info(
+                    "Doc %d: attached %d downloadable links (showing up to 5): %s",
+                    idx,
+                    len(resolved_links),
+                    resolved_links[:5],
+                )
+
+        return data
+
 
 
 
     def download_all_attachments(self,input_json_path: Path):
-        """Main method to download attachments from admissions_data.json."""
+        """Main method to download attachments from admissions_data.json.
+
+        Returns updated records in-memory and does not rewrite input JSON locally.
+        """
 
 
-        self.create_truncate_download_directory()
+        if not (AZURE_BLOB_AVAILABLE and os.getenv("AZURE_STORAGE_CONNECTION_STRING")):
+            raise ValueError(
+                "Azure Blob Storage is required for attachment downloads. "
+                "Set AZURE_STORAGE_CONNECTION_STRING and install azure-storage-blob."
+            )
         logger.info("Loading JSON from: %s", input_json_path)
         if not input_json_path.exists():
             logger.warning("admissions_data.json not found at: %s", input_json_path)
-            return
+            return []
         data = json.loads(input_json_path.read_text(encoding="utf-8"))
         session = requests.Session()
         any_downloaded = False
@@ -228,17 +283,12 @@ class AttachmentDownloader:
                 meta = doc.setdefault("metadata", {})
                 meta.setdefault("attachments", []).extend(saved)
 
-        # write updated JSON atomically
-        out_path = input_json_path
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(out_path.parent)) as tmp:
-            json.dump(data, tmp, ensure_ascii=False, indent=2)
-            tmp.flush()
-        Path(tmp.name).replace(out_path)
-
         if any_downloaded:
-            logger.info("Downloads complete. Updated admissions_data.json with attachments.")
+            logger.info("Downloads complete. Returning updated records in-memory.")
         else:
             logger.info("No downloadable links found or nothing new to download.")
+
+        return data
 
 
 
