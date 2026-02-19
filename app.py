@@ -66,8 +66,11 @@ def get_rag_pipeline() -> RAGPipeline:
     if rag_pipeline is None:
         try:
             rag_pipeline = RAGPipeline(
-                persist_directory="./ug_admission_data",
+                persist_directory=os.getenv("RAG_PERSIST_DIRECTORY", os.getenv("CHROMA_PERSIST_DIRECTORY", "./vector_store/ug_admission_data")),
+                collection_name=os.getenv("RAG_COLLECTION_NAME", os.getenv("CHROMA_COLLECTION_NAME", "UG_admission_data")),
+                embedding_model=os.getenv("RAG_EMBEDDING_MODEL", os.getenv("AZURE_OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")),
                 llm_provider=os.getenv("LLM_PROVIDER", "google"),
+                llm_model=os.getenv("RAG_LLM_MODEL") or None,
                 top_k=int(os.getenv("RAG_TOP_K", "1")),
                 temperature=float(os.getenv("LLM_TEMPERATURE", "0.3"))
             )

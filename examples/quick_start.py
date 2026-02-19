@@ -25,9 +25,9 @@ def check_environment():
         print("✅ .env file found")
     
     # Check vector database
-    db_path = Path("ug_admission_data/chroma.sqlite3")
+    db_path = Path("vector_store/ug_admission_data/chroma.sqlite3")
     if not db_path.exists():
-        issues.append("❌ Chroma database not found at ug_admission_data/")
+        issues.append("❌ Chroma database not found at vector_store/ug_admission_data/")
     else:
         print("✅ Chroma database found")
     
@@ -161,7 +161,7 @@ def main():
         print("\n⚠️  Please fix the issues above before proceeding.")
         print("\nSetup instructions:")
         print("  1. Create .env file with your API keys")
-        print("  2. Ensure vector database exists in ug_admission_data/")
+        print("  2. Ensure vector database exists in vector_store/ug_admission_data/")
         print("  3. Run: pip install -r requirements.txt")
         sys.exit(1)
     

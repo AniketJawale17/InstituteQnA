@@ -13,9 +13,11 @@ Each step saves checkpoints to prevent data loss.
 """
 
 import logging
-from institute_qna.data_preprocess.knoweldge_base_creation import main, create_embeddings_in_batches
+from institute_qna.data_preprocess.knoweldge_base_creation import main
+from institute_qna.data_preprocess.chroma_vector_store import create_embeddings_in_batches
+from institute_qna.data_preprocess.vector_store_ingestion import store_documents_in_vector_backend
 from pathlib import Path
-import json
+import os
 
 # Configure logging
 logging.basicConfig(
@@ -31,40 +33,15 @@ logger = logging.getLogger(__name__)
 
 
 def display_checkpoint_info():
-    """Display information about saved checkpoints."""
-    checkpoint_dir = Path("extracted_text_data/checkpoints")
-    
-    if not checkpoint_dir.exists():
-        logger.warning("No checkpoint directory found")
-        return
-    
-    checkpoints = sorted(checkpoint_dir.glob("*.json"))
-    
-    if not checkpoints:
-        logger.info("No checkpoints found")
-        return
-    
+    """Display Azure Blob checkpoint destination details."""
+    container = os.getenv("AZURE_STORAGE_CONTAINER_NAME", "qna-checkpoints")
     print("\n" + "="*80)
-    print("SAVED CHECKPOINTS")
+    print("CHECKPOINT DESTINATION")
     print("="*80)
-    
-    for cp in checkpoints:
-        size = cp.stat().st_size
-        size_mb = size / (1024 * 1024)
-        print(f"\n📄 {cp.name}")
-        print(f"   Size: {size_mb:.2f} MB")
-        
-        # Try to show document count if it's a list
-        try:
-            with open(cp, 'r') as f:
-                data = json.load(f)
-            if isinstance(data, list):
-                print(f"   Items: {len(data)}")
-            elif isinstance(data, dict) and 'total_documents' in data:
-                print(f"   Total documents: {data['total_documents']}")
-        except:
-            pass
-    
+    print("📦 Azure Blob Storage")
+    print(f"   Container: {container}")
+    print("   Folder format per run: <timestamp>/")
+    print("   Example: 20260219_220501/06_final_combined_20260219_220501.json")
     print("\n" + "="*80)
 
 
@@ -94,8 +71,9 @@ def main_pipeline():
         print("💡 NEXT STEPS")
         print("="*80)
         print("To create embeddings, you can:")
-        print("  1. Run: create_embeddings_in_batches(structured_docs)")
-        print("  2. Or uncomment the line below in this script")
+        print("  1. Chroma: create_embeddings_in_batches(structured_docs)")
+        print("  2. Azure AI Search: store_documents_in_vector_backend(structured_docs, backend='azure_ai_search')")
+        print("  3. Or uncomment one option below in this script")
         print()
         
         # Uncomment to create embeddings immediately
@@ -103,6 +81,7 @@ def main_pipeline():
         # if user_input.lower() == 'y':
         #     logger.info("Creating embeddings...")
         #     create_embeddings_in_batches(structured_docs, batch_size=70, sleep_time=60)
+        #     store_documents_in_vector_backend(structured_docs, backend="azure_ai_search")
         
         return structured_docs
         

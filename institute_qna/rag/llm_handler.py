@@ -67,7 +67,7 @@ Answer:"""
         
         # Initialize LLM based on provider
         if self.provider == "azure":
-            self.model_name = model or "gpt-4o-mini"
+            self.model_name = model or os.getenv("AZURE_OPENAI_CHAT_MODEL", "gpt-4o-mini")
             self.llm = self._init_azure_llm()
             self.prompt_template = ChatPromptTemplate.from_template(self.system_prompt)
             self.chain = self.prompt_template | self.llm | StrOutputParser()

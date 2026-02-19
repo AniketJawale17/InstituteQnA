@@ -7,6 +7,7 @@ from institute_qna.rag.retriever import RAGRetriever
 from institute_qna.rag.llm_handler import LLMHandler
 from typing import Dict, List, Optional
 import logging
+import os
 import time
 
 logger = logging.getLogger(__name__)
@@ -17,10 +18,10 @@ class RAGPipeline:
     
     def __init__(
         self,
-        persist_directory: str = "./ug_admission_data",
-        collection_name: str = "UG_admission_data",
-        embedding_model: str = "text-embedding-3-small",
-        llm_provider: str = "google",
+        persist_directory: Optional[str] = None,
+        collection_name: Optional[str] = None,
+        embedding_model: Optional[str] = None,
+        llm_provider: Optional[str] = None,
         llm_model: Optional[str] = None,
         top_k: int = 5,
         temperature: float = 0.3,
@@ -38,6 +39,20 @@ class RAGPipeline:
             temperature: LLM temperature
             system_prompt: Custom system prompt
         """
+        persist_directory = persist_directory or os.getenv(
+            "RAG_PERSIST_DIRECTORY",
+            os.getenv("CHROMA_PERSIST_DIRECTORY", "./vector_store/ug_admission_data"),
+        )
+        collection_name = collection_name or os.getenv(
+            "RAG_COLLECTION_NAME",
+            os.getenv("CHROMA_COLLECTION_NAME", "UG_admission_data"),
+        )
+        embedding_model = embedding_model or os.getenv(
+            "RAG_EMBEDDING_MODEL",
+            os.getenv("AZURE_OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+        )
+        llm_provider = llm_provider or os.getenv("LLM_PROVIDER", "google")
+
         # Initialize retriever
         self.retriever = RAGRetriever(
             persist_directory=persist_directory,

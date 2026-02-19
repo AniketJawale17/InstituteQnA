@@ -2,17 +2,22 @@
 
 This module provides utilities to extract text from PDF files and split them
 into manageable chunks for processing and embedding generation.
+
+Supports two extraction methods:
+1. 'opensource' - Uses pypdf + pdfplumber (default, no API costs)
+2. 'azure' - Uses Azure Document Intelligence (requires Azure credentials)
 """
 
 from langchain_community.document_loaders import PyPDFLoader
 from pathlib import Path
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Literal
 import csv
 import hashlib
 import logging
 import re
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +28,16 @@ try:
 except ImportError:
     PDFPLUMBER_AVAILABLE = False
     logger.warning("pdfplumber not available. Table extraction will be limited. Install with: pip install pdfplumber")
+
+# Try importing Azure Document Intelligence
+try:
+    from azure.core.credentials import AzureKeyCredential
+    from azure.ai.documentintelligence import DocumentIntelligenceClient
+    from azure.ai.documentintelligence.models import AnalyzeDocumentRequest, DocumentContentFormat
+    AZURE_DOC_INTELLIGENCE_AVAILABLE = True
+except ImportError:
+    AZURE_DOC_INTELLIGENCE_AVAILABLE = False
+    logger.info("Azure Document Intelligence not available. Install with: pip install azure-ai-documentintelligence")
 
 
 class PDFTextExtractor:
@@ -39,7 +54,8 @@ class PDFTextExtractor:
                 chunk_overlap: int = 200,
                 tables_output_dir: str = "extracted_text_data/checkpoints/tables",
                 university: str = "coep",
-                skip_merit_lists: bool = True
+                skip_merit_lists: bool = True,
+                extraction_method: Literal["opensource", "azure"] = "azure"
             ):
         """Initialize the PDF Text Extractor.
         
@@ -47,6 +63,10 @@ class PDFTextExtractor:
             pdf_path: Path to the PDF file to extract
             chunk_size: Size of text chunks (in characters)
             chunk_overlap: Overlap between chunks (in characters)
+            tables_output_dir: Directory to save extracted tables as CSV
+            university: University identifier for metadata
+            skip_merit_lists: Whether to skip merit list PDFs
+            extraction_method: Method to use - 'opensource' (pypdf+pdfplumber) or 'azure' (Azure Document Intelligence)
         """
         self.pdf_path = pdf_path
         self.chunk_size = chunk_size
@@ -54,8 +74,19 @@ class PDFTextExtractor:
         self.tables_output_dir = Path(tables_output_dir)
         self.university = university
         self.skip_merit_lists = skip_merit_lists
+        self.extraction_method = extraction_method
         self.extracted_text: List[Document] = []
         self._table_schema_paths: Dict[str, str] = {}
+        
+        # Validate extraction method and dependencies
+        if self.extraction_method == "azure" and not AZURE_DOC_INTELLIGENCE_AVAILABLE:
+            logger.error("Azure Document Intelligence not available. Install with: pip install azure-ai-documentintelligence")
+            raise ImportError("Azure Document Intelligence SDK not installed")
+        
+        # Initialize Azure client if using Azure method
+        self.azure_client = None
+        if self.extraction_method == "azure":
+            self._initialize_azure_client()
     
     def detect_tables_in_text(self, text: str) -> bool:
         """Detect if text contains table-like structures.
@@ -304,11 +335,32 @@ class PDFTextExtractor:
     def extract_text_from_text_pdf(self) -> List[Document]:
         """Extract text from a text-based PDF file and split into chunks.
         
+        This method routes to the appropriate extraction method based on 
+        the extraction_method parameter:
+        - 'opensource': Uses PyPDFLoader + pdfplumber (default)
+        - 'azure': Uses Azure Document Intelligence
+        
         Returns:
             List of Document objects containing chunked text
             
         Raises:
-            FileNotFoundError: If PDF file doesn't exist
+            FileNotFoundError: If PDF file does not exist
+            RuntimeError: If PDF extraction fails
+        """
+        # Route to appropriate extraction method
+        if self.extraction_method == "azure":
+            return self.extract_text_from_azure_doc_intelligence()
+        else:
+            return self._extract_text_opensource()
+    
+    def _extract_text_opensource(self) -> List[Document]:
+        """Extract text from PDF using open-source tools (PyPDF + pdfplumber).
+        
+        Returns:
+            List of Document objects containing chunked text
+            
+        Raises:
+            FileNotFoundError: If PDF file does not exist
             RuntimeError: If PDF extraction fails
         """
         path = Path(self.pdf_path)
@@ -408,6 +460,7 @@ class PDFTextExtractor:
                             "has_table": True,
                             "source_type": "pdf_table",
                             "university": self.university,
+                            "extraction_method": "opensource",
                             **extracted_metadata
                         }
                     )
@@ -424,6 +477,7 @@ class PDFTextExtractor:
                 "table_csv_paths": table_csv_paths,
                 "source_type": "pdf",
                 "university": self.university,
+                "extraction_method": "opensource",
                 **extracted_metadata
             })
             enhanced_pages.append(page)
@@ -475,7 +529,7 @@ class PDFTextExtractor:
             List of all chunked documents from all PDFs
             
         Raises:
-            FileNotFoundError: If folder doesn't exist
+            FileNotFoundError: If folder does not exist
             ValueError: If no PDF files found in folder
         """
         folder_path = Path(pdf_folder_path)
@@ -527,71 +581,337 @@ class PDFTextExtractor:
         logger.info(f"Document types: {doc_types_count}")
         
         return all_chunks
-    
-    def extract_text_from_hybrid_pdf(self) -> List[Document]:
-        """Extract text from a hybrid PDF (text + images) using UnstructuredPDFLoader.
+      
+    def _initialize_azure_client(self) -> None:
+        """Initialize Azure Document Intelligence client from environment variables.
         
-        This method uses UnstructuredPDFLoader which can handle PDFs with both
-        text and image content, though it requires additional dependencies.
+        Requires environment variables:
+        - AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT
+        - AZURE_DOCUMENT_INTELLIGENCE_KEY
+        
+        Raises:
+            ValueError: If required environment variables are not set
+        """
+        endpoint = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT")
+        key = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_KEY")
+        
+        if not endpoint or not key:
+            logger.error("Azure Document Intelligence credentials not found in environment variables")
+            raise ValueError(
+                "Missing Azure credentials. Set AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT "
+                "and AZURE_DOCUMENT_INTELLIGENCE_KEY environment variables"
+            )
+        
+        self.azure_client = DocumentIntelligenceClient(
+            endpoint=endpoint,
+            credential=AzureKeyCredential(key)
+        )
+        logger.info("Azure Document Intelligence client initialized")
+    
+    def extract_text_from_azure_doc_intelligence(self) -> List[Document]:
+        """Extract text and tables from PDF using Azure Document Intelligence.
+        
+        This method uses Azure's Document Intelligence service to analyze PDFs,
+        providing high-quality extraction of text, tables, and document structure.
         
         Returns:
-            List of Document objects containing chunked text
+            List of Document objects containing chunked text with table information
             
         Raises:
-            FileNotFoundError: If PDF file doesn't exist
-            RuntimeError: If extraction fails or dependencies missing
+            FileNotFoundError: If PDF file does not exist
+            RuntimeError: If Azure extraction fails
         """
         path = Path(self.pdf_path)
         if not path.exists():
             logger.error(f"PDF file not found: {self.pdf_path}")
             raise FileNotFoundError(f"PDF file not found: {self.pdf_path}")
-
-        try:
-            from langchain_community.document_loaders import UnstructuredPDFLoader
-            
-            logger.info(f"Loading hybrid PDF: {self.pdf_path}")
-            loader = UnstructuredPDFLoader(str(path))
-            pages = loader.load()
-            logger.info(f"Loaded {len(pages)} pages from hybrid PDF")
-            
-        except ImportError as e:
-            logger.error("UnstructuredPDFLoader not available. Install: pip install unstructured")
-            raise RuntimeError(
-                "UnstructuredPDFLoader not available. "
-                "Install required packages: pip install unstructured"
-            ) from e
-        except Exception as e:
-            logger.error(f"Failed to load hybrid PDF {self.pdf_path}: {e}")
-            raise RuntimeError(f"Hybrid PDF extraction failed: {e}") from e
         
-        # Split pages into smaller chunks
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap,
-            length_function=len,
-            separators=["\n\n", "\n", ".", " ", ""]
-        )
-
-        filtered_pages = []
-        skipped_index_pages = 0
-        for idx, page in enumerate(pages):
-            if self.is_index_page(page.page_content):
-                skipped_index_pages += 1
-                continue
-            page.metadata.update({
-                "source": page.metadata.get("source", str(path)),
-                "filename": path.name,
-                "page_number": idx + 1,
-                "source_type": "pdf",
-                "university": self.university
-            })
-            filtered_pages.append(page)
-
-        if skipped_index_pages:
-            logger.info(f"Skipped {skipped_index_pages} index/contents page(s) in {path.name}")
-
-        chunks = splitter.split_documents(filtered_pages)
-        logger.info(f"✅ Split {self.pdf_path} into {len(chunks)} text chunks")
-
-        return chunks
+        if not self.azure_client:
+            logger.error("Azure client not initialized")
+            raise RuntimeError("Azure Document Intelligence client not initialized")
+        
+        logger.info(f"Analyzing PDF with Azure Document Intelligence: {self.pdf_path}")
+        
+        try:
+            # Read PDF file
+            with open(path, "rb") as f:
+                pdf_bytes = f.read()
+            
+            # Analyze document with layout model (best for general documents with tables)
+            poller = self.azure_client.begin_analyze_document(
+                model_id="prebuilt-layout",  # Use layout model for tables and structure
+                body=pdf_bytes,
+                content_type="application/pdf",
+                output_content_format=DocumentContentFormat.MARKDOWN , # Get markdown output
+                # body={"include_text_content": True, "include_tables": True}
+            )
+            
+            result = poller.result()
+            logger.info(f"Azure analysis complete for {path.name}")
+            
+            # Classify document type
+            sample_text = result.content[:1000] if result.content else ""
+            doc_type = self.classify_pdf_document(sample_text, path.name)
+            
+            if "merit" in path.name.lower():
+                doc_type = "merit_list"
+            
+            if doc_type == "merit_list" and self.skip_merit_lists:
+                logger.info(f"Skipping merit list PDF: {path.name}")
+                return []
+            
+            # Extract metadata from content
+            extracted_metadata = self.extract_metadata_from_pdf_text(sample_text)
+            
+            # Create tables directory
+            self.tables_output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Process tables if present
+            table_documents: List[Document] = []
+            table_info_by_page: Dict[int, List[Dict]] = {}
+            
+            if result.tables:
+                logger.info(f"Found {len(result.tables)} tables in {path.name}")
+                for table_idx, table in enumerate(result.tables):
+                    # Convert Azure table to list format
+                    table_data = self._convert_azure_table_to_list(table)
+                    
+                    # Determine page number (Azure uses 1-based page numbers)
+                    page_num = self._get_table_page_number(table)
+                    
+                    # Format table as markdown
+                    formatted_table = self.format_table_as_markdown(table_data)
+                    
+                    # Determine if it's a merit list table
+                    header = table_data[0] if table_data else []
+                    is_merit_table = self._is_merit_list_table(header)
+                    
+                    # Save table to CSV
+                    if is_merit_table and doc_type == "merit_list":
+                        csv_path = self.write_merit_table_to_csv(
+                            table_data,
+                            path.stem,
+                            page_num,
+                            table_idx
+                        )
+                        schema_key = "merit_list"
+                    else:
+                        schema_key = self.get_table_schema_key(header)
+                        csv_path = self.write_table_to_csv(
+                            table_data,
+                            path.stem,
+                            page_num,
+                            table_idx,
+                            schema_key
+                        )
+                    
+                    # Store table info
+                    if page_num not in table_info_by_page:
+                        table_info_by_page[page_num] = []
+                    
+                    table_info_by_page[page_num].append({
+                        'table_index': table_idx,
+                        'content': formatted_table,
+                        'csv_path': csv_path,
+                        'schema_key': schema_key,
+                        'header': header
+                    })
+                    
+                    # Create document for table
+                    table_documents.append(
+                        Document(
+                            page_content=formatted_table,
+                            metadata={
+                                "source": str(path),
+                                "filename": path.name,
+                                "doc_type": doc_type,
+                                "page": page_num,
+                                "table_index": table_idx,
+                                "table_csv_path": csv_path,
+                                "table_schema_key": schema_key,
+                                "table_schema_header": header,
+                                "has_table": True,
+                                "source_type": "pdf_table",
+                                "university": self.university,
+                                "extraction_method": "azure",
+                                **extracted_metadata
+                            }
+                        )
+                    )
+            
+            # Process main content as pages
+            # Split content by pages if page information is available
+            pages_content = []
+            if result.pages:
+                for page_idx, page in enumerate(result.pages):
+                    page_num = page_idx + 1
+                    
+                    # Extract text from this page using spans
+                    page_text = self._extract_page_text_from_result(result, page)
+                    
+                    if self.is_index_page(page_text):
+                        logger.debug(f"Skipping index page {page_num}")
+                        continue
+                    
+                    # Check if page has tables
+                    page_tables = table_info_by_page.get(page_num, [])
+                    has_table = len(page_tables) > 0 or self.detect_tables_in_text(page_text)
+                    table_csv_paths = [t['csv_path'] for t in page_tables]
+                    
+                    # Create page document
+                    page_doc = Document(
+                        page_content=page_text,
+                        metadata={
+                            "source": str(path),
+                            "filename": path.name,
+                            "doc_type": doc_type,
+                            "page_number": page_num,
+                            "has_table": has_table,
+                            "table_csv_paths": table_csv_paths,
+                            "source_type": "pdf",
+                            "university": self.university,
+                            "extraction_method": "azure",
+                            **extracted_metadata
+                        }
+                    )
+                    pages_content.append(page_doc)
+            else:
+                # Fallback: use entire content as single document
+                logger.warning("No page information available, using full content")
+                page_doc = Document(
+                    page_content=result.content,
+                    metadata={
+                        "source": str(path),
+                        "filename": path.name,
+                        "doc_type": doc_type,
+                        "source_type": "pdf",
+                        "university": self.university,
+                        "extraction_method": "azure",
+                        **extracted_metadata
+                    }
+                )
+                pages_content.append(page_doc)
+            
+            # Smart separators based on content type
+            separators = ["\n\n", "\n", ". ", " ", ""]
+            if doc_type in ['fees', 'admissions']:
+                separators = ["\n### ", "\n## ", "\n\n", "\n", ". ", " ", ""]
+            
+            # Handle merit list documents
+            if doc_type == "merit_list":
+                self.extracted_text = table_documents
+            else:
+                # Split pages into chunks
+                splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=self.chunk_size,
+                    chunk_overlap=self.chunk_overlap,
+                    length_function=len,
+                    separators=separators
+                )
+                
+                self.extracted_text = splitter.split_documents(pages_content)
+                
+                # Add table documents
+                if table_documents:
+                    self.extracted_text.extend(table_documents)
+            
+            logger.info(
+                f"✅ Extracted from {self.pdf_path} using Azure: {len(self.extracted_text)} chunks "
+                f"(Type: {doc_type}, Tables: {len(result.tables) if result.tables else 0})"
+            )
+            
+            return self.extracted_text
+            
+        except Exception as e:
+            logger.error(f"Azure Document Intelligence extraction failed for {self.pdf_path}: {e}")
+            raise RuntimeError(f"Azure extraction failed: {e}") from e
+    
+    def _convert_azure_table_to_list(self, table) -> List[List[str]]:
+        """Convert Azure Document Intelligence table to list of lists format.
+        
+        Args:
+            table: Azure table object
+            
+        Returns:
+            List of lists representing the table
+        """
+        if not table.cells:
+            return []
+        
+        # Find table dimensions
+        max_row = max(cell.row_index for cell in table.cells) + 1
+        max_col = max(cell.column_index for cell in table.cells) + 1
+        
+        # Initialize empty table
+        table_data = [["" for _ in range(max_col)] for _ in range(max_row)]
+        
+        # Fill in cell values
+        for cell in table.cells:
+            row = cell.row_index
+            col = cell.column_index
+            content = cell.content or ""
+            
+            # Handle cell spanning
+            row_span = getattr(cell, 'row_span', 1) or 1
+            col_span = getattr(cell, 'column_span', 1) or 1
+            
+            # Fill all spanned cells
+            for r in range(row, min(row + row_span, max_row)):
+                for c in range(col, min(col + col_span, max_col)):
+                    if r == row and c == col:
+                        table_data[r][c] = content
+                    else:
+                        table_data[r][c] = ""  # Mark spanned cells as empty
+        
+        return table_data
+    
+    def _get_table_page_number(self, table) -> int:
+        """Extract page number from Azure table object.
+        
+        Args:
+            table: Azure table object
+            
+        Returns:
+            Page number (1-indexed)
+        """
+        # Try to get from bounding regions
+        if hasattr(table, 'bounding_regions') and table.bounding_regions:
+            return table.bounding_regions[0].page_number
+        
+        # Fallback to 1 if not available
+        return 1
+    
+    def _extract_page_text_from_result(self, result, page) -> str:
+        """Extract text content for a specific page from Azure result.
+        
+        Args:
+            result: Azure analysis result
+            page: Page object
+            
+        Returns:
+            Text content for the page
+        """
+        # Use page spans to extract relevant text from full content
+        page_text = []
+        
+        if hasattr(page, 'spans') and page.spans:
+            for span in page.spans:
+                offset = span.offset
+                length = span.length
+                page_text.append(result.content[offset:offset + length])
+        
+        return "\n".join(page_text) if page_text else ""
+    
+    def _is_merit_list_table(self, header: List[str]) -> bool:
+        """Check if table header indicates merit list.
+        
+        Args:
+            header: Table header row
+            
+        Returns:
+            True if this is a merit list table
+        """
+        header_text = " ".join(str(h).lower() for h in header)
+        merit_indicators = ['rank', 'merit', 'score', 'percentile', 'marks', 'candidate']
+        return sum(indicator in header_text for indicator in merit_indicators) >= 2
 

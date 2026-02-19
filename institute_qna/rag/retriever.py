@@ -8,6 +8,7 @@ from langchain_chroma import Chroma
 from langchain_openai import AzureOpenAIEmbeddings
 from typing import List, Dict, Optional
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -17,9 +18,9 @@ class RAGRetriever:
     
     def __init__(
         self, 
-        persist_directory: str = "./ug_admission_data",
-        collection_name: str = "UG_admission_data",
-        model: str = "text-embedding-3-small",
+        persist_directory: Optional[str] = None,
+        collection_name: Optional[str] = None,
+        model: Optional[str] = None,
         top_k: int = 5
     ):
         """Initialize the RAG Retriever.
@@ -30,13 +31,23 @@ class RAGRetriever:
             model: Azure OpenAI embedding model name
             top_k: Number of documents to retrieve
         """
-        self.persist_directory = persist_directory
-        self.collection_name = collection_name
+        self.persist_directory = persist_directory or os.getenv(
+            "RAG_PERSIST_DIRECTORY",
+            os.getenv("CHROMA_PERSIST_DIRECTORY", "./vector_store/ug_admission_data"),
+        )
+        self.collection_name = collection_name or os.getenv(
+            "RAG_COLLECTION_NAME",
+            os.getenv("CHROMA_COLLECTION_NAME", "UG_admission_data"),
+        )
+        model_name = model or os.getenv(
+            "RAG_EMBEDDING_MODEL",
+            os.getenv("AZURE_OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+        )
         self.top_k = top_k
         
         # Initialize embeddings
         self.embeddings = AzureOpenAIEmbeddings(
-            model=model,
+            model=model_name,
         )
         
         # Load vector store

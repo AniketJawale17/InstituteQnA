@@ -15,12 +15,19 @@ Complete Pipeline:
 from institute_qna.data_preprocess.extract_pdf_text import PDFTextExtractor
 from institute_qna.data_extraction.webscrapper import WebBasedLoader
 from institute_qna.data_extraction.download_attachment import AttachmentDownloader
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document 
+try:
+    from azure.storage.blob import BlobServiceClient
+    AZURE_BLOB_AVAILABLE = True
+except ModuleNotFoundError:
+    AZURE_BLOB_AVAILABLE = False
+
 import json
 import re
 import hashlib
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from institute_qna.data_preprocess.embedding_generation import EmbeddingsGeneration
-from langchain_core.documents import Document 
+import os
 from pathlib import Path
 from typing import List, Set, Optional
 import logging
@@ -58,23 +65,63 @@ class KnowledgeBaseCreation(PDFTextExtractor):
     def __init__(
         self,
         checkpoint_dir: str = "extracted_text_data/checkpoints",
-        university: str = "coep"
+        university: str = "coep",
+        extraction_method: str = "azure",
+        run_timestamp: Optional[str] = None,
     ):
         """Initialize the Knowledge Base Creation class.
         
         Args:
             checkpoint_dir: Directory to save checkpoint files
+            university: University identifier for metadata
+            extraction_method: PDF extraction method - 'opensource'  or 'azure'
         """
-        super().__init__(university=university)
+        super().__init__(university=university, extraction_method=extraction_method)
         self.structured_documents: List[Document] = []
         self._seen_content_hashes: Set[str] = set()
         self.checkpoint_dir = Path(checkpoint_dir)
         self.university = university
+        self.extraction_method = extraction_method
+        self.run_timestamp = run_timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.azure_blob_connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+        self.azure_blob_container_name = os.getenv("AZURE_STORAGE_CONTAINER_NAME", "qna-checkpoints")
+        self._blob_service_client = None
+        self._blob_container_client = None
         logger.info(f"Checkpoint directory: {self.checkpoint_dir}")
+        logger.info(f"PDF extraction method: {self.extraction_method}")
+        logger.info(f"Checkpoint run timestamp: {self.run_timestamp}")
+        self._initialize_blob_container()
+
+    def _initialize_blob_container(self) -> None:
+        """Initialize Azure Blob Storage container used for checkpoints."""
+        if not AZURE_BLOB_AVAILABLE:
+            raise ImportError(
+                "azure-storage-blob is not installed. "
+                "Install it with: pip install azure-storage-blob"
+            )
+
+        if not self.azure_blob_connection_string:
+            raise ValueError(
+                "AZURE_STORAGE_CONNECTION_STRING is not set. "
+                "Checkpoint uploads require Azure Blob Storage configuration."
+            )
+
+        self._blob_service_client = BlobServiceClient.from_connection_string(
+            self.azure_blob_connection_string
+        )
+        self._blob_container_client = self._blob_service_client.get_container_client(
+            self.azure_blob_container_name
+        )
+        if not self._blob_container_client.exists():
+            self._blob_container_client.create_container()
+            logger.info(
+                "Created Azure Blob container for checkpoints: %s",
+                self.azure_blob_container_name,
+            )
     
-    def save_checkpoint(self, data: any, step_name: str, timestamp: Optional[str] = None) -> Path:
-        """Save checkpoint data to prevent data loss.
+    def save_checkpoint(self, data: any, step_name: str, timestamp: Optional[str] = None) -> str:
+        """Save checkpoint data to Azure Blob Storage.
         
         Args:
             data: Data to save (list, dict, etc.)
@@ -82,12 +129,13 @@ class KnowledgeBaseCreation(PDFTextExtractor):
             timestamp: Optional timestamp string, defaults to current time
             
         Returns:
-            Path to saved checkpoint file
+            Blob path for saved checkpoint
         """
         if timestamp is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        checkpoint_file = self.checkpoint_dir / f"{step_name}_{timestamp}.json"
+            timestamp = self.run_timestamp
+
+        checkpoint_file_name = f"{step_name}_{timestamp}.json"
+        blob_path = f"{timestamp}/{checkpoint_file_name}"
         
         try:
             # Convert Documents to serializable format if needed
@@ -101,12 +149,18 @@ class KnowledgeBaseCreation(PDFTextExtractor):
                 ]
             else:
                 serializable_data = data
-            
-            with open(checkpoint_file, 'w', encoding='utf-8') as f:
-                json.dump(serializable_data, f, indent=2, ensure_ascii=False)
-            
-            logger.info(f"✅ Checkpoint saved: {checkpoint_file} ({len(data) if isinstance(data, list) else 'N/A'} items)")
-            return checkpoint_file
+
+            payload = json.dumps(serializable_data, indent=2, ensure_ascii=False).encode("utf-8")
+            blob_client = self._blob_container_client.get_blob_client(blob=blob_path)
+            blob_client.upload_blob(payload, overwrite=True)
+
+            logger.info(
+                "✅ Checkpoint uploaded to Azure Blob: %s/%s (%s items)",
+                self.azure_blob_container_name,
+                blob_path,
+                len(data) if isinstance(data, list) else 'N/A',
+            )
+            return blob_path
         except Exception as e:
             logger.error(f"Failed to save checkpoint {step_name}: {e}")
             raise
@@ -120,8 +174,9 @@ class KnowledgeBaseCreation(PDFTextExtractor):
             if entry.is_file():
                 entry.unlink()
     
-    def load_checkpoint(self, checkpoint_file: Path, as_documents: bool = False) -> any:
-        """Load data from checkpoint file.
+
+    def load_checkpoint(self, checkpoint_file: str, as_documents: bool = False) -> any:
+        """Load data from a blob checkpoint path.
         
         Args:
             checkpoint_file: Path to checkpoint file
@@ -131,8 +186,9 @@ class KnowledgeBaseCreation(PDFTextExtractor):
             Loaded data
         """
         try:
-            with open(checkpoint_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            blob_client = self._blob_container_client.get_blob_client(blob=checkpoint_file)
+            payload = blob_client.download_blob().readall().decode("utf-8")
+            data = json.loads(payload)
             
             if as_documents and isinstance(data, list):
                 documents = [
@@ -145,7 +201,7 @@ class KnowledgeBaseCreation(PDFTextExtractor):
                 logger.info(f"Loaded {len(documents)} documents from checkpoint")
                 return documents
             
-            logger.info(f"Loaded checkpoint from {checkpoint_file}")
+            logger.info(f"Loaded checkpoint from Azure Blob path {checkpoint_file}")
             return data
         except Exception as e:
             logger.error(f"Failed to load checkpoint {checkpoint_file}: {e}")
@@ -174,12 +230,10 @@ class KnowledgeBaseCreation(PDFTextExtractor):
 
                 source = metadata.get("source", "unknown")
                 page = metadata.get("page")
-                page_label = metadata.get("page_label")
 
                 metadata.update({
                     "source": source,
                     "page": str(page) if page is not None else None,
-                    "page_label": page_label,
                     "university": self.university,
                 })
 
@@ -432,7 +486,6 @@ class KnowledgeBaseCreation(PDFTextExtractor):
                             "source": source,
                             "title": title,
                             "page": title,
-                            "page_label": 1000,
                             "doc_type": doc_type,
                             "source_type": "web",
                             "university": self.university,
@@ -465,7 +518,7 @@ class KnowledgeBaseCreation(PDFTextExtractor):
         return structured
 
 
-def main() -> List[Document]:
+def main(extraction_method: str = "azure") -> List[Document]:
     """Main function to process all documents and create knowledge base.
     
     Complete pipeline with checkpointing:
@@ -475,15 +528,23 @@ def main() -> List[Document]:
     4. Web data processing
     5. Combining and final save
     
+    Args:
+        extraction_method: PDF extraction method - 'opensource' (default) or 'azure'
+    
     Returns:
         List of all structured documents (web + PDF)
     """
     logger.info("="*80)
     logger.info("STARTING COMPLETE KNOWLEDGE BASE CREATION PIPELINE")
+    logger.info(f"PDF Extraction Method: {extraction_method.upper()}")
     logger.info("="*80)
     
-    obj = KnowledgeBaseCreation(university="pune")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    obj = KnowledgeBaseCreation(
+        university="pune",
+        extraction_method=extraction_method,
+        run_timestamp=timestamp,
+    )
 
     # Clear previous table CSVs to avoid duplicates
     obj.clear_tables_checkpoint_dir()
@@ -660,75 +721,19 @@ def main() -> List[Document]:
         ]
     }
     
-    summary_file = obj.checkpoint_dir / f"summary_{timestamp}.json"
-    with open(summary_file, 'w', encoding='utf-8') as f:
-        json.dump(summary, f, indent=2)
+    summary_blob_path = obj.save_checkpoint(summary, "summary", timestamp)
     
     logger.info("="*80)
     logger.info("PIPELINE COMPLETE ✅")
     logger.info("="*80)
-    logger.info(f"All checkpoints saved in: {obj.checkpoint_dir}")
-    logger.info(f"Summary file: {summary_file}")
+    logger.info(
+        "All checkpoints uploaded to Azure Blob container '%s' under folder '%s/'",
+        obj.azure_blob_container_name,
+        timestamp,
+    )
+    logger.info(f"Summary blob path: {summary_blob_path}")
     
     return all_docs
-
-
-def create_embeddings_in_batches(
-    documents: List[Document],
-    batch_size: int = 70,
-    sleep_time: int = 60
-) -> None:
-    """Create embeddings for documents in batches to avoid rate limits.
-    
-    Args:
-        documents: List of documents to embed
-        batch_size: Number of documents per batch
-        sleep_time: Sleep duration between batches (seconds)
-    """
-    logger.info(f"Creating embeddings for {len(documents)} documents in batches of {batch_size}")
-    
-    embed_gen = EmbeddingsGeneration(
-        collection_name="pune_admissions",
-        persist_directory="vector_store/pune_admissions"
-    )
-    
-    # Process first batch
-    first_batch_size = min(batch_size, len(documents))
-    logger.info(f"Processing first batch of {first_batch_size} documents...")
-    
-    try:
-        vector_store = embed_gen.openai_embeddings_generation(
-            docs=documents[:first_batch_size]
-        )
-        logger.info(f"✅ First batch complete")
-    except Exception as e:
-        logger.error(f"Failed to process first batch: {e}")
-        raise
-    
-    # Process remaining batches
-    if len(documents) > batch_size:
-        remaining = len(documents) - batch_size
-        num_batches = (remaining + batch_size - 1) // batch_size
-        
-        logger.info(f"Processing {num_batches} additional batches...")
-        
-        for i in range(num_batches):
-            start_idx = batch_size + (i * batch_size)
-            end_idx = min(start_idx + batch_size, len(documents))
-            
-            logger.info(f"Batch {i+2}/{num_batches+1}: Documents {start_idx} to {end_idx}")
-            logger.info(f"Sleeping for {sleep_time} seconds to avoid rate limits...")
-            sleep(sleep_time)
-            
-            try:
-                batch_docs = documents[start_idx:end_idx]
-                embed_gen.add_documents(batch_docs)
-                logger.info(f"✅ Batch {i+2} complete")
-            except Exception as e:
-                logger.error(f"Failed to process batch {i+2}: {e}")
-                continue
-    
-    logger.info("✅ All embeddings created successfully!")
 
 
 if __name__ == "__main__":
@@ -754,10 +759,7 @@ if __name__ == "__main__":
     print("\n" + "="*80)
     print("💡 Next Steps:")
     print("="*80)
-    print("To create embeddings, uncomment the code below and run:")
+    print("To create embeddings, run dedicated vector-store modules:")
     print("  python -m institute_qna.data_preprocess.knoweldge_base_creation")
-    print()
-    
-    # Uncomment to create embeddings
-    print("\n🔄 Creating embeddings...")
-    create_embeddings_in_batches(structured_docs, batch_size=70, sleep_time=60)
+    print("  - Chroma: use institute_qna.data_preprocess.chroma_vector_store")
+    print("  - Azure AI Search: use institute_qna.data_preprocess.azure_ai_search_store")

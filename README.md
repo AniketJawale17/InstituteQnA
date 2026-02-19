@@ -6,6 +6,7 @@ A comprehensive Question Answering system for COEP Technological University buil
 
 - **RAG-Powered Q&A**: Intelligent question answering using vector search and LLMs
 - **Multi-Source Data**: Processes information from website and PDF documents
+- **Flexible PDF Extraction**: Choose between open-source (free) or Azure Document Intelligence (advanced) methods
 - **RESTful API**: FastAPI-based endpoints for easy integration
 - **Multi-LLM Support**: Works with Azure OpenAI and Google Gemini
 - **Interactive Mode**: Command-line interface for testing
@@ -32,6 +33,7 @@ See [SETUP_GUIDE.md](SETUP_GUIDE.md) for detailed instructions.
 ## 📚 Documentation
 
 - **[RAG System Overview](RAG_SYSTEM_README.md)** - Complete RAG documentation
+- **[PDF Extraction Guide](PDF_EXTRACTION_GUIDE.md)** - Open-source vs Azure methods
 - **[Setup Guide](SETUP_GUIDE.md)** - Installation and configuration
 - **[Implementation Summary](RAG_IMPLEMENTATION_SUMMARY.md)** - Technical details
 - **[Usage Examples](examples/)** - Code examples and scripts
@@ -60,7 +62,7 @@ InstituteQnA/
 │   ├── data_extraction/        # Web scraping
 │   └── data_preprocess/        # Data processing
 ├── examples/                   # Usage examples
-├── ug_admission_data/         # Vector database
+├── vector_store/              # Vector databases (Chroma)
 ├── app.py                     # FastAPI application
 └── requirements.txt           # Dependencies
 ```
