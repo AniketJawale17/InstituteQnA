@@ -68,22 +68,23 @@ def main(
     
     urls_to_scrape = [
         "https://www.coeptech.ac.in/admissions/undergraduate/"
-        "https://www.coeptech.ac.in/about-us/about-university/",
-        "https://www.coeptech.ac.in/hostel/hostel-admissions/",
-        "https://www.coeptech.ac.in/hostel/rules-and-regulations/",
-        "https://www.coeptech.ac.in/student-corner/student-services/student-helpline/",
-        "https://www.coeptech.ac.in/student-corner/student-clubs/",
-        "https://www.coeptech.ac.in/facilities/facilities-manager/facilities-for-differently-abled-individuals/",
-        "https://www.coeptech.ac.in/useful-links/university-sections/",
-        "https://www.coeptech.ac.in/admissions/undergraduate/first-year-admissions/",
-        "https://www.coeptech.ac.in/admissions/undergraduate/direct-second-year-admission/",
-        "https://www.coeptech.ac.in/admissions/undergraduate/working-professional/",
-        "https://mtech2025.coeptech.ac.in/StaticPages/HomePage",
-        "https://www.coeptech.ac.in/admissions/post-graduate/",
-        "https://www.coeptech.ac.in/admissions/ph-d/",
-        "https://www.coeptech.ac.in/admissions/mba/"
+        ]
+        # "https://www.coeptech.ac.in/about-us/about-university/",
+        # "https://www.coeptech.ac.in/hostel/hostel-admissions/",
+        # "https://www.coeptech.ac.in/hostel/rules-and-regulations/",
+        # "https://www.coeptech.ac.in/student-corner/student-services/student-helpline/",
+        # "https://www.coeptech.ac.in/student-corner/student-clubs/",
+        # "https://www.coeptech.ac.in/facilities/facilities-manager/facilities-for-differently-abled-individuals/",
+        # "https://www.coeptech.ac.in/useful-links/university-sections/",
+        # "https://www.coeptech.ac.in/admissions/undergraduate/first-year-admissions/",
+        # "https://www.coeptech.ac.in/admissions/undergraduate/direct-second-year-admission/",
+        # "https://www.coeptech.ac.in/admissions/undergraduate/working-professional/",
+        # "https://mtech2025.coeptech.ac.in/StaticPages/HomePage",
+        # "https://www.coeptech.ac.in/admissions/post-graduate/",
+        # "https://www.coeptech.ac.in/admissions/ph-d/",
+        # "https://www.coeptech.ac.in/admissions/mba/"
         
-     ]
+    #  ]
     
     urls_to_scrape_2 = [
         "https://mitaoe.ac.in/admission.php",
@@ -125,6 +126,8 @@ def main(
     
     try:
         if web_data:
+            removed = AttachmentDownloader.clear_attachment_prefix_on_blob()
+            logger.info("Cleared attachment blob prefix before download step (%d old blobs removed)", removed)
             logger.info("Scanning web data for attachments and uploading files to Azure Blob...")
             web_data_with_attachments = AttachmentDownloader().download_attachments_from_documents(web_data)
             obj.save_checkpoint(web_data_with_attachments, "02_attachments_downloaded", timestamp)

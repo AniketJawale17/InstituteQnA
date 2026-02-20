@@ -91,6 +91,7 @@ class PDFTextExtractor:
         self._table_schema_paths: Dict[str, str] = {}
         self._blob_service_client = None
         self._blob_container_client = None
+        self.skip_index_pages = os.getenv("SKIP_INDEX_PAGES", "false").lower() in {"1", "true", "yes"}
         self.azure_blob_connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
         self.azure_blob_container_name = os.getenv("AZURE_STORAGE_CONTAINER_NAME", "qna-checkpoints")
         self.tables_blob_prefix = os.getenv(
@@ -448,7 +449,7 @@ class PDFTextExtractor:
                 except Exception:
                     pass
 
-            if self.is_index_page(page_text):
+            if self.skip_index_pages and self.is_index_page(page_text):
                 skipped_index_pages += 1
                 continue
 
@@ -868,7 +869,7 @@ class PDFTextExtractor:
                     # Extract text from this page using spans
                     page_text = self._extract_page_text_from_result(result, page)
                     
-                    if self.is_index_page(page_text):
+                    if self.skip_index_pages and self.is_index_page(page_text):
                         logger.debug(f"Skipping index page {page_num}")
                         continue
                     

@@ -49,6 +49,85 @@ class AttachmentDownloader:
     """Utility class to find and download attachments from HTML content."""
 
     @staticmethod
+    def _delete_blob_batch_with_retry(container_client, blob_names: List[str]) -> int:
+        """Delete a batch of blob names with retry for transient failures."""
+        if not blob_names:
+            return 0
+
+        max_attempts = max(1, int(os.getenv("BLOB_DELETE_MAX_RETRIES", "4")))
+        base_delay = max(0.5, float(os.getenv("BLOB_DELETE_BASE_DELAY_SECONDS", "1.0")))
+        max_delay = max(base_delay, float(os.getenv("BLOB_DELETE_MAX_DELAY_SECONDS", "15")))
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                container_client.delete_blobs(*blob_names, delete_snapshots="include")
+                return len(blob_names)
+            except Exception as e:
+                retryable = isinstance(
+                    e,
+                    (
+                        ServiceRequestError,
+                        ServiceResponseError,
+                        requests.ConnectionError,
+                        requests.Timeout,
+                        TimeoutError,
+                    ),
+                )
+                if isinstance(e, HttpResponseError):
+                    status_code = getattr(e, "status_code", None)
+                    retryable = retryable or status_code in {408, 409, 429, 500, 502, 503, 504}
+
+                if not retryable or attempt >= max_attempts:
+                    raise
+
+                delay = min(max_delay, base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.75)
+                logger.warning(
+                    "Batch blob delete failed (attempt %d/%d, %d blobs): %s. Retrying in %.1fs",
+                    attempt,
+                    max_attempts,
+                    len(blob_names),
+                    e,
+                    delay,
+                )
+                time.sleep(delay)
+
+    @staticmethod
+    def clear_attachment_prefix_on_blob() -> int:
+        """Delete existing blobs under attachment prefix before a fresh pipeline run."""
+        if not (AZURE_BLOB_AVAILABLE and os.getenv("AZURE_STORAGE_CONNECTION_STRING")):
+            raise ValueError(
+                "Azure Blob Storage is required for attachment downloads. "
+                "Set AZURE_STORAGE_CONNECTION_STRING and install azure-storage-blob."
+            )
+
+        connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+        container = os.getenv("AZURE_STORAGE_CONTAINER_NAME", "qna-checkpoints")
+        attachment_prefix = os.getenv("AZURE_ATTACHMENTS_BLOB_PREFIX", "attachments").strip("/")
+        prefix = f"{attachment_prefix}/"
+
+        service = BlobServiceClient.from_connection_string(connection_string)
+        container_client = service.get_container_client(container)
+        if not container_client.exists():
+            container_client.create_container()
+            return 0
+
+        batch_size = max(1, int(os.getenv("BLOB_DELETE_BATCH_SIZE", "256")))
+        pending: List[str] = []
+        deleted = 0
+
+        for blob in container_client.list_blobs(name_starts_with=prefix):
+            pending.append(blob.name)
+            if len(pending) >= batch_size:
+                deleted += AttachmentDownloader._delete_blob_batch_with_retry(container_client, pending)
+                pending = []
+
+        if pending:
+            deleted += AttachmentDownloader._delete_blob_batch_with_retry(container_client, pending)
+
+        logger.info("Cleared %d existing attachment blobs under prefix '%s'", deleted, prefix)
+        return deleted
+
+    @staticmethod
     def _upload_blob_with_retry(container_client, blob_name: str, file_bytes: bytes) -> str:
         """Upload bytes to blob with retries for transient connection/service failures."""
         max_attempts = max(1, int(os.getenv("BLOB_UPLOAD_MAX_RETRIES", "5")))

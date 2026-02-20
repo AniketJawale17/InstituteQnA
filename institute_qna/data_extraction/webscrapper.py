@@ -94,6 +94,16 @@ class WebBasedLoader:
 		data = loader.load()
 		logger.debug("Loaded %d documents from %s", len(data), url)
 
+		# Ensure markdown/text fallback exists before attempting raw HTML fetch.
+		for d in data:
+			try:
+				orig = getattr(d, "page_content", None) or ""
+				if orig:
+					d.metadata.setdefault("text_extracted", orig)
+					d.metadata.setdefault("markdowntext", orig)
+			except Exception:
+				logger.debug("Could not initialize fallback markdown/text for a document", exc_info=True)
+
 		# create a requests session with a small retry strategy
 		session = requests.Session()
 		retry_strategy = Retry(total=2, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
@@ -122,6 +132,9 @@ class WebBasedLoader:
 						d.metadata["markdowntext"] = md(r.text)
 					except requests.RequestException as e:
 						logger.warning("Failed to fetch raw HTML for %s: %s", src, e, exc_info=True)
+						# Keep existing fallback markdown/text so downstream web structuring still works.
+						if not d.metadata.get("markdowntext"):
+							d.metadata["markdowntext"] = d.metadata.get("text_extracted", "")
 			except Exception:
 				# ignore documents with unexpected shapes but log at debug level
 				logger.debug("Unexpected document shape while processing source", exc_info=True)

@@ -152,4 +152,8 @@ def configure_logging(
         }
     )
 
+    azure_http_level = os.getenv("AZURE_HTTP_LOG_LEVEL", "WARNING").upper()
+    logging.getLogger("azure").setLevel(azure_http_level)
+    logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(azure_http_level)
+
     _add_blob_logging_handler(lvl)

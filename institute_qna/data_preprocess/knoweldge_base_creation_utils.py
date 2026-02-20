@@ -358,10 +358,14 @@ class KnowledgeBaseCreation(PDFTextExtractor):
     def deduplicate_chunks(self, chunks: List[Document]) -> List[Document]:
         unique_chunks = []
         buckets = {}
+        seen_content_hashes: Set[str] = set()
+        normalize_numbers = os.getenv("DEDUP_NORMALIZE_NUMBERS", "false").lower() in {"1", "true", "yes"}
+        similarity_threshold = float(os.getenv("DEDUP_SIMILARITY_THRESHOLD", "0.985"))
 
         def normalize_for_similarity(text: str) -> str:
             text = re.sub(r"\s+", " ", text.lower()).strip()
-            text = re.sub(r"\d+", "0", text)
+            if normalize_numbers:
+                text = re.sub(r"\d+", "0", text)
             return text
 
         def shingle_hashes(text: str, size: int = 5) -> set:
@@ -386,7 +390,7 @@ class KnowledgeBaseCreation(PDFTextExtractor):
             normalized = normalize_for_similarity(chunk.page_content)
             content_hash = hashlib.md5(normalized.encode("utf-8")).hexdigest()
 
-            if content_hash in self._seen_content_hashes:
+            if content_hash in seen_content_hashes:
                 logger.debug("Skipping duplicate chunk from %s", chunk.metadata.get("source", "unknown"))
                 continue
 
@@ -397,7 +401,7 @@ class KnowledgeBaseCreation(PDFTextExtractor):
             is_near_duplicate = False
             for candidate in bucket[-200:]:
                 similarity = jaccard_similarity(shingles, candidate["shingles"])
-                if similarity >= 0.95:
+                if similarity >= similarity_threshold:
                     is_near_duplicate = True
                     break
 
@@ -405,7 +409,7 @@ class KnowledgeBaseCreation(PDFTextExtractor):
                 logger.debug("Skipping near-duplicate chunk from %s", chunk.metadata.get("source", "unknown"))
                 continue
 
-            self._seen_content_hashes.add(content_hash)
+            seen_content_hashes.add(content_hash)
             bucket.append({"shingles": shingles})
             unique_chunks.append(chunk)
 
@@ -414,6 +418,7 @@ class KnowledgeBaseCreation(PDFTextExtractor):
 
     def website_structure_documents(self, web_data: List[dict]) -> List[Document]:
         raw = web_data or []
+        min_web_content_length = int(os.getenv("MIN_WEB_CONTENT_LENGTH", "30"))
 
         if not raw:
             logger.warning("No website data available to structure")
@@ -424,13 +429,25 @@ class KnowledgeBaseCreation(PDFTextExtractor):
         pages = []
         for idx, doc in enumerate(raw):
             try:
-                raw_content = doc.get("metadata", {}).get("markdowntext", "")
-                source = doc.get("metadata", {}).get("source", "unknown")
-                title = doc.get("metadata", {}).get("title", "")
+                metadata = doc.get("metadata", {}) or {}
+                source = metadata.get("source", "unknown")
+                title = metadata.get("title", "")
+
+                raw_content = metadata.get("markdowntext", "")
+                if not raw_content:
+                    raw_content = metadata.get("text_extracted", "")
+                if not raw_content:
+                    raw_content = doc.get("page_content", "")
 
                 cleaned_content = self.clean_markdown_content(raw_content)
-                if len(cleaned_content.strip()) < 100:
-                    logger.warning("Skipping document %s - too short after cleaning", idx)
+                if len(cleaned_content.strip()) < min_web_content_length:
+                    logger.warning(
+                        "Skipping document %s - too short after cleaning (len=%s, min=%s, source=%s)",
+                        idx,
+                        len(cleaned_content.strip()),
+                        min_web_content_length,
+                        source,
+                    )
                     continue
 
                 doc_type = self.classify_document_type(cleaned_content, source, title)
