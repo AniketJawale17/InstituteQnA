@@ -11,6 +11,8 @@ import json
 import logging
 import os
 import re
+import time
+import random
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Set
@@ -23,6 +25,7 @@ from institute_qna.data_preprocess.extract_pdf_text import PDFTextExtractor
 
 try:
     from azure.storage.blob import BlobServiceClient
+    from azure.core.exceptions import ServiceRequestError, ServiceResponseError, HttpResponseError
 
     AZURE_BLOB_AVAILABLE = True
 except ModuleNotFoundError:
@@ -121,8 +124,7 @@ class KnowledgeBaseCreation(PDFTextExtractor):
                 serializable_data = data
 
             payload = json.dumps(serializable_data, indent=2, ensure_ascii=False).encode("utf-8")
-            blob_client = self._blob_container_client.get_blob_client(blob=blob_path)
-            blob_client.upload_blob(payload, overwrite=True)
+            self._upload_blob_bytes_with_retry(blob_path, payload)
 
             logger.info(
                 "✅ Checkpoint uploaded to Azure Blob: %s/%s (%s items)",
@@ -175,8 +177,7 @@ class KnowledgeBaseCreation(PDFTextExtractor):
         ]
 
         payload = json.dumps(serializable_data, indent=2, ensure_ascii=False).encode("utf-8")
-        blob_client = self._blob_container_client.get_blob_client(blob=blob_path)
-        blob_client.upload_blob(payload, overwrite=True)
+        self._upload_blob_bytes_with_retry(blob_path, payload)
         logger.info(
             "✅ Final processed document set uploaded: %s/%s (%s docs)",
             self.azure_blob_container_name,
@@ -184,6 +185,46 @@ class KnowledgeBaseCreation(PDFTextExtractor):
             len(documents),
         )
         return blob_path
+
+    def _upload_blob_bytes_with_retry(self, blob_path: str, payload: bytes) -> None:
+        """Upload payload bytes to Azure blob with retries for transient failures."""
+        max_attempts = max(1, int(os.getenv("BLOB_UPLOAD_MAX_RETRIES", "5")))
+        base_delay = max(0.5, float(os.getenv("BLOB_UPLOAD_BASE_DELAY_SECONDS", "1.5")))
+        max_delay = max(base_delay, float(os.getenv("BLOB_UPLOAD_MAX_DELAY_SECONDS", "20")))
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                blob_client = self._blob_container_client.get_blob_client(blob=blob_path)
+                blob_client.upload_blob(payload, overwrite=True)
+                return
+            except Exception as e:
+                retryable = isinstance(
+                    e,
+                    (
+                        ServiceRequestError,
+                        ServiceResponseError,
+                        TimeoutError,
+                        ConnectionError,
+                    ),
+                )
+
+                if isinstance(e, HttpResponseError):
+                    status_code = getattr(e, "status_code", None)
+                    retryable = retryable or status_code in {408, 409, 429, 500, 502, 503, 504}
+
+                if not retryable or attempt >= max_attempts:
+                    raise
+
+                delay = min(max_delay, base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.75)
+                logger.warning(
+                    "Blob upload transient failure for %s (attempt %d/%d): %s. Retrying in %.1fs",
+                    blob_path,
+                    attempt,
+                    max_attempts,
+                    e,
+                    delay,
+                )
+                time.sleep(delay)
 
     def load_documents_from_blob_path(self, blob_path: str) -> List[Document]:
         """Load serialized documents from blob path and return LangChain Document objects."""

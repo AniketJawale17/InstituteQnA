@@ -15,6 +15,8 @@ import logging
 from pathlib import Path
 import json
 import re
+import time
+import random
 from logging import getLogger
 import requests
 from urllib.parse import urljoin, urlparse
@@ -25,6 +27,7 @@ from institute_qna.logging_config import configure_logging
 
 try:
     from azure.storage.blob import BlobServiceClient
+    from azure.core.exceptions import ServiceRequestError, ServiceResponseError, HttpResponseError
     AZURE_BLOB_AVAILABLE = True
 except (ModuleNotFoundError, ImportError):
     AZURE_BLOB_AVAILABLE = False
@@ -44,6 +47,47 @@ class Config:
 
 class AttachmentDownloader:
     """Utility class to find and download attachments from HTML content."""
+
+    @staticmethod
+    def _upload_blob_with_retry(container_client, blob_name: str, file_bytes: bytes) -> str:
+        """Upload bytes to blob with retries for transient connection/service failures."""
+        max_attempts = max(1, int(os.getenv("BLOB_UPLOAD_MAX_RETRIES", "5")))
+        base_delay = max(0.5, float(os.getenv("BLOB_UPLOAD_BASE_DELAY_SECONDS", "1.5")))
+        max_delay = max(base_delay, float(os.getenv("BLOB_UPLOAD_MAX_DELAY_SECONDS", "20")))
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                container_client.get_blob_client(blob=blob_name).upload_blob(file_bytes, overwrite=True)
+                return blob_name
+            except Exception as e:
+                retryable = isinstance(
+                    e,
+                    (
+                        ServiceRequestError,
+                        ServiceResponseError,
+                        requests.ConnectionError,
+                        requests.Timeout,
+                        TimeoutError,
+                    ),
+                )
+
+                if isinstance(e, HttpResponseError):
+                    status_code = getattr(e, "status_code", None)
+                    retryable = retryable or status_code in {408, 409, 429, 500, 502, 503, 504}
+
+                if not retryable or attempt >= max_attempts:
+                    raise
+
+                delay = min(max_delay, base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.75)
+                logger.warning(
+                    "Blob upload failed for %s (attempt %d/%d): %s. Retrying in %.1fs",
+                    blob_name,
+                    attempt,
+                    max_attempts,
+                    e,
+                    delay,
+                )
+                time.sleep(delay)
 
     @staticmethod
     def find_download_links(html: str):
@@ -152,7 +196,7 @@ class AttachmentDownloader:
         if not container_client.exists():
             container_client.create_container()
 
-        container_client.get_blob_client(blob=blob_name).upload_blob(file_bytes, overwrite=True)
+        AttachmentDownloader._upload_blob_with_retry(container_client, blob_name, file_bytes)
         return f"azure-blob://{container}/{blob_name}"
 
     @staticmethod

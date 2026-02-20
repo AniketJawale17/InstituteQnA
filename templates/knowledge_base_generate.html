@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Knowledge Base Generation</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    body {
+      margin: 0;
+      background: #f5f7fb;
+      color: #1f2937;
+    }
+    .container {
+      max-width: 1100px;
+      margin: 24px auto;
+      padding: 0 16px;
+    }
+    .header {
+      margin-bottom: 16px;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 16px;
+    }
+    .card {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    select, button {
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid #cbd5e1;
+      font-size: 14px;
+    }
+    button {
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      cursor: pointer;
+    }
+    button:disabled {
+      background: #9ca3af;
+      cursor: not-allowed;
+    }
+    .progress-wrap {
+      margin: 12px 0;
+    }
+    .progress-track {
+      width: 100%;
+      height: 14px;
+      border-radius: 999px;
+      background: #e5e7eb;
+      overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: #16a34a;
+      transition: width 0.4s ease;
+    }
+    .muted {
+      color: #6b7280;
+      font-size: 14px;
+    }
+    .events {
+      margin-top: 12px;
+      max-height: 320px;
+      overflow-y: auto;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 10px;
+      background: #fafafa;
+      font-size: 13px;
+    }
+    .event {
+      margin: 0 0 6px;
+      padding-bottom: 6px;
+      border-bottom: 1px dashed #e5e7eb;
+    }
+    .event:last-child {
+      border-bottom: none;
+      margin-bottom: 0;
+    }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+      font-size: 14px;
+    }
+    .summary-item {
+      padding: 10px;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      background: #fafafa;
+    }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    @media (max-width: 900px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h2>Knowledge Base Preparation</h2>
+      <p class="muted">Start the full pipeline and monitor live progress + runtime summary.</p>
+    </div>
+
+    <div class="layout">
+      <section class="card">
+        <div class="row">
+          <label for="method">Extraction Method</label>
+          <select id="method">
+            <option value="azure" selected>Azure Document Intelligence</option>
+            <option value="opensource">Open Source</option>
+          </select>
+          <button id="startBtn">Start Preparing Knowledge Base</button>
+        </div>
+
+        <div class="progress-wrap">
+          <div class="row" style="justify-content: space-between; margin-bottom: 6px;">
+            <strong id="statusText">Status: idle</strong>
+            <strong id="percentText">0%</strong>
+          </div>
+          <div class="progress-track">
+            <div class="progress-bar" id="progressBar"></div>
+          </div>
+        </div>
+
+        <div class="muted" id="currentStep">Current Step: Not started</div>
+
+        <h4>Runtime Events</h4>
+        <div class="events" id="events"></div>
+      </section>
+
+      <aside class="card">
+        <h3>Runtime Summary</h3>
+        <div class="summary-grid">
+          <div class="summary-item"><strong>Planned URLs:</strong> <span id="plannedUrls">-</span></div>
+          <div class="summary-item"><strong>Documents Prepared:</strong> <span id="docCount">-</span></div>
+          <div class="summary-item"><strong>Started At (UTC):</strong> <span id="startedAt">-</span></div>
+          <div class="summary-item"><strong>Elapsed / Total Time:</strong> <span id="timeTaken">-</span></div>
+          <div class="summary-item"><strong>Error:</strong> <span id="errorText">None</span></div>
+          <div class="summary-item">
+            <strong>Sample Document Preview:</strong>
+            <pre id="samplePreview">No sample yet</pre>
+          </div>
+          <div class="summary-item">
+            <strong>Sample Metadata:</strong>
+            <pre id="sampleMetadata">No metadata yet</pre>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+    const startBtn = document.getElementById('startBtn');
+    const methodSelect = document.getElementById('method');
+    const statusText = document.getElementById('statusText');
+    const percentText = document.getElementById('percentText');
+    const progressBar = document.getElementById('progressBar');
+    const currentStep = document.getElementById('currentStep');
+    const eventsEl = document.getElementById('events');
+
+    const plannedUrlsEl = document.getElementById('plannedUrls');
+    const docCountEl = document.getElementById('docCount');
+    const startedAtEl = document.getElementById('startedAt');
+    const timeTakenEl = document.getElementById('timeTaken');
+    const errorTextEl = document.getElementById('errorText');
+    const samplePreviewEl = document.getElementById('samplePreview');
+    const sampleMetadataEl = document.getElementById('sampleMetadata');
+
+    let pollHandle = null;
+
+    function formatSeconds(sec) {
+      if (sec === null || sec === undefined) return '-';
+      const seconds = Number(sec);
+      if (Number.isNaN(seconds)) return '-';
+      if (seconds < 60) return `${seconds.toFixed(1)}s`;
+      const mins = Math.floor(seconds / 60);
+      const rem = (seconds % 60).toFixed(1);
+      return `${mins}m ${rem}s`;
+    }
+
+    function renderState(state) {
+      const percent = Number(state.progress_percent || 0);
+      statusText.textContent = `Status: ${state.status}`;
+      percentText.textContent = `${percent}%`;
+      progressBar.style.width = `${percent}%`;
+      currentStep.textContent = `Current Step: ${state.current_step || '-'}`;
+
+      const summary = state.summary || {};
+      plannedUrlsEl.textContent = summary.planned_urls ?? '-';
+      docCountEl.textContent = summary.total_documents ?? 0;
+      startedAtEl.textContent = state.started_at || '-';
+
+      if (state.running && state.started_at) {
+        const started = new Date(state.started_at).getTime();
+        const elapsed = (Date.now() - started) / 1000;
+        timeTakenEl.textContent = `${formatSeconds(elapsed)} (running)`;
+      } else {
+        timeTakenEl.textContent = formatSeconds(state.duration_seconds);
+      }
+
+      errorTextEl.textContent = state.error || 'None';
+
+      const sample = summary.sample_document;
+      if (sample && sample.content_preview) {
+        samplePreviewEl.textContent = sample.content_preview;
+        sampleMetadataEl.textContent = JSON.stringify(sample.metadata || {}, null, 2);
+      } else {
+        samplePreviewEl.textContent = 'No sample yet';
+        sampleMetadataEl.textContent = 'No metadata yet';
+      }
+
+      const events = state.events || [];
+      eventsEl.innerHTML = events.slice(-25).map(event => {
+        return `<div class="event"><strong>${event.time}</strong><br>${event.message}</div>`;
+      }).join('') || '<div class="event">No events yet</div>';
+
+      startBtn.disabled = !!state.running;
+      if (!state.running && pollHandle && (state.status === 'completed' || state.status === 'failed')) {
+        clearInterval(pollHandle);
+        pollHandle = null;
+      }
+    }
+
+    async function loadStatus() {
+      const response = await fetch('/knowledge_base/generate/status');
+      if (!response.ok) {
+        throw new Error(`Failed to fetch status: ${response.status}`);
+      }
+      const state = await response.json();
+      renderState(state);
+      return state;
+    }
+
+    async function startRun() {
+      startBtn.disabled = true;
+      const extractionMethod = methodSelect.value;
+
+      const response = await fetch('/knowledge_base/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ extraction_method: extractionMethod })
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        startBtn.disabled = false;
+        throw new Error(payload.detail || 'Failed to start run');
+      }
+
+      renderState(payload.run);
+      if (!pollHandle) {
+        pollHandle = setInterval(() => {
+          loadStatus().catch((error) => {
+            console.error(error);
+          });
+        }, 1500);
+      }
+    }
+
+    startBtn.addEventListener('click', () => {
+      startRun().catch((error) => {
+        alert(error.message);
+      });
+    });
+
+    loadStatus().then((state) => {
+      if (state.running && !pollHandle) {
+        pollHandle = setInterval(() => {
+          loadStatus().catch((error) => {
+            console.error(error);
+          });
+        }, 1500);
+      }
+    }).catch((error) => {
+      console.error(error);
+    });
+  </script>
+</body>
+</html>
