@@ -19,7 +19,6 @@ from logging import getLogger
 import requests
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
-import tempfile
 import os
 from typing import List, Dict, Any
 from institute_qna.logging_config import configure_logging
@@ -27,19 +26,18 @@ from institute_qna.logging_config import configure_logging
 try:
     from azure.storage.blob import BlobServiceClient
     AZURE_BLOB_AVAILABLE = True
-except ModuleNotFoundError:
+except (ModuleNotFoundError, ImportError):
     AZURE_BLOB_AVAILABLE = False
 
 logger = getLogger(__name__)
 logger.setLevel(os.getenv("LOGGER_LEVEL","INFO"))
 logger.addHandler(logging.StreamHandler())
-configure_logging(level=os.getenv("LOGGER_LEVEL","INFO"), log_file="logs/download_attachments.log")
+configure_logging(level=os.getenv("LOGGER_LEVEL","INFO"), log_file=None)
 
 
 @dataclass
 class Config:
-    
-    DOWNLOAD_DIR = Path(__file__).resolve().parent.parent.parent / "attachments"
+
     # file extensions we consider downloadable
     EXT_RE = re.compile(r"\.(pdf|docx|doc|xls|xlsx|csv|pptx|zip|tar.gz|gz|png|jpe?g|gif)$", re.I)
 
@@ -111,7 +109,7 @@ class AttachmentDownloader:
         return filename
 
     @staticmethod
-    def download_file(url: str, dest: Path, session: requests.Session):
+    def download_file(url: str, filename_hint: str, session: requests.Session):
         headers = {"User-Agent": "my-scraper/0.1 (+https://example.com)"}
         try:
             # handle protocol-relative URLs
@@ -127,14 +125,15 @@ class AttachmentDownloader:
         # If destination filename has no extension, try to get a better name from
         # Content-Disposition or the final URL after redirects
         final_url = r.url
-        if not Path(dest.name).suffix:
+        resolved_filename = filename_hint
+        if not urlparse(resolved_filename).path.lower().endswith(tuple([".pdf", ".docx", ".doc", ".xls", ".xlsx", ".csv", ".pptx", ".zip", ".tar.gz", ".gz", ".png", ".jpg", ".jpeg", ".gif"])):
             # try content-disposition
             cd = r.headers.get("content-disposition")
             filename = AttachmentDownloader._filename_from_content_disposition(cd) if cd else None
             if not filename:
                 filename = AttachmentDownloader.safe_filename_from_url(final_url)
             if filename:
-                dest = dest.parent / filename
+                resolved_filename = filename
 
         file_bytes = b"".join(chunk for chunk in r.iter_content(chunk_size=8192) if chunk)
 
@@ -146,7 +145,7 @@ class AttachmentDownloader:
 
         container = os.getenv("AZURE_STORAGE_CONTAINER_NAME", "qna-checkpoints")
         attachment_prefix = os.getenv("AZURE_ATTACHMENTS_BLOB_PREFIX", "attachments")
-        blob_name = f"{attachment_prefix}/{dest.name}"
+        blob_name = f"{attachment_prefix}/{resolved_filename}"
 
         service = BlobServiceClient.from_connection_string(os.getenv("AZURE_STORAGE_CONNECTION_STRING"))
         container_client = service.get_container_client(container)
@@ -155,28 +154,6 @@ class AttachmentDownloader:
 
         container_client.get_blob_client(blob=blob_name).upload_blob(file_bytes, overwrite=True)
         return f"azure-blob://{container}/{blob_name}"
-
-    @staticmethod
-    def create_truncate_download_directory():
-        """
-            Ensure the download directory exists and is empty.
-        """
-
-        # Create the download directory if it doesn't exist
-        Config.DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-        # Clean attachments directory at start to ensure fresh downloads each run
-        for child in Config.DOWNLOAD_DIR.iterdir():
-            try:
-                if child.is_file():
-                    child.unlink()
-                elif child.is_dir():
-                    # remove directories recursively
-                    import shutil
-                    shutil.rmtree(child)
-            except Exception as e:
-                logger.warning("Failed to remove %s: %s", child, e, exc_info=True)
-        logger.info("Cleaned download directory: %s", Config.DOWNLOAD_DIR)
 
     @staticmethod
     def augment_documents_with_attachment_links(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -211,7 +188,55 @@ class AttachmentDownloader:
 
 
 
-    def download_all_attachments(self,input_json_path: Path):
+    def download_attachments_from_documents(self, data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Download linked attachments directly to Azure Blob and annotate docs.
+
+        Keeps original source URLs in `metadata.attachments` and writes uploaded blob
+        URIs to `metadata.attachment_blobs`.
+        """
+
+        if not (AZURE_BLOB_AVAILABLE and os.getenv("AZURE_STORAGE_CONNECTION_STRING")):
+            raise ValueError(
+                "Azure Blob Storage is required for attachment downloads. "
+                "Set AZURE_STORAGE_CONNECTION_STRING and install azure-storage-blob."
+            )
+
+        session = requests.Session()
+        for idx, doc in enumerate(data):
+            html = doc.get("page_content", "")
+            source = doc.get("metadata", {}).get("source")
+            links = AttachmentDownloader.find_download_links(html)
+
+            if not links:
+                continue
+
+            resolved_urls: List[str] = []
+            uploaded_blob_uris: List[str] = []
+            for href in links:
+                url = urljoin(source, href) if source else href
+                resolved_urls.append(url)
+
+                filename_hint = AttachmentDownloader.safe_filename_from_url(url)
+                logger.info("Uploading attachment to blob from URL: %s", url)
+                uploaded = AttachmentDownloader.download_file(url, filename_hint, session)
+                if uploaded:
+                    uploaded_blob_uris.append(uploaded)
+
+            if resolved_urls:
+                meta = doc.setdefault("metadata", {})
+                meta["attachments"] = resolved_urls
+                meta["attachment_blobs"] = uploaded_blob_uris
+                logger.info(
+                    "Doc %d: %d attachment URLs, %d uploaded to blob (showing up to 5): %s",
+                    idx,
+                    len(resolved_urls),
+                    len(uploaded_blob_uris),
+                    uploaded_blob_uris[:5],
+                )
+
+        return data
+
+    def download_all_attachments(self,input_json_path):
         """Main method to download attachments from admissions_data.json.
 
         Returns updated records in-memory and does not rewrite input JSON locally.
@@ -228,67 +253,7 @@ class AttachmentDownloader:
             logger.warning("admissions_data.json not found at: %s", input_json_path)
             return []
         data = json.loads(input_json_path.read_text(encoding="utf-8"))
-        session = requests.Session()
-        any_downloaded = False
-
-
-        for idx, doc in enumerate(data):
-            html = doc.get("page_content", "")
-            source = doc.get("metadata", {}).get("source")
-            links = AttachmentDownloader.find_download_links(html)
-
-            # reset any previous attachments recorded so we store fresh ones
-            try:
-                if isinstance(doc.get("metadata"), dict):
-                    doc["metadata"].pop("attachments", None)
-            except Exception:
-                logger.debug("Could not reset previous attachments for doc %d", idx, exc_info=True)
-
-
-            if links:
-                logger.info(
-                "Doc %d: found %d candidate links (showing up to 5): %s",
-                idx,
-                len(links),
-                links[:5],
-            )
-            saved = []
-            if not links:
-                # nothing found on this doc
-                continue
-
-            for href in links:
-                # resolve relative to source if available
-                if source:
-                    url = urljoin(source, href)
-                else:
-                    url = href
-
-                fname = AttachmentDownloader.safe_filename_from_url(url)
-                dest = Config.DOWNLOAD_DIR / fname
-                # avoid redownloading
-                if dest.exists():
-                    logger.info(f"Already have {dest}, skipping")
-                    saved.append(str(dest))
-                    continue
-
-                logger.info(f"Downloading {url} -> {dest}")
-                res = AttachmentDownloader.download_file(url, dest, session)
-                if res:
-                    saved.append(str(res))
-                    any_downloaded = True
-
-            # attach saved file list to metadata
-            if saved:
-                meta = doc.setdefault("metadata", {})
-                meta.setdefault("attachments", []).extend(saved)
-
-        if any_downloaded:
-            logger.info("Downloads complete. Returning updated records in-memory.")
-        else:
-            logger.info("No downloadable links found or nothing new to download.")
-
-        return data
+        return self.download_attachments_from_documents(data)
 
 
 

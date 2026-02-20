@@ -19,7 +19,9 @@ import logging
 import re
 import os
 import io
+import random
 from datetime import datetime
+from time import sleep
 import requests
 
 logger = logging.getLogger(__name__)
@@ -35,6 +37,7 @@ except ImportError:
 # Try importing Azure Document Intelligence
 try:
     from azure.core.credentials import AzureKeyCredential
+    from azure.core.exceptions import HttpResponseError, ServiceRequestError, ServiceResponseError
     from azure.ai.documentintelligence import DocumentIntelligenceClient
     from azure.ai.documentintelligence.models import AnalyzeDocumentRequest, DocumentContentFormat
     AZURE_DOC_INTELLIGENCE_AVAILABLE = True
@@ -635,6 +638,86 @@ class PDFTextExtractor:
             credential=AzureKeyCredential(key)
         )
         logger.info("Azure Document Intelligence client initialized")
+
+    def _get_retry_after_seconds(self, error: Exception) -> Optional[float]:
+        """Parse retry-after hint from Azure error response headers when available."""
+        response = getattr(error, "response", None)
+        if not response:
+            return None
+
+        headers = getattr(response, "headers", {}) or {}
+        raw_retry_after = (
+            headers.get("Retry-After")
+            or headers.get("retry-after")
+            or headers.get("x-ms-retry-after-ms")
+            or headers.get("x-ms-retry-after")
+        )
+        if raw_retry_after is None:
+            return None
+
+        try:
+            value = float(raw_retry_after)
+        except (TypeError, ValueError):
+            return None
+
+        if "ms" in str(raw_retry_after).lower() or "x-ms-retry-after-ms" in headers:
+            return max(0.0, value / 1000.0)
+        return max(0.0, value)
+
+    def _is_retryable_azure_error(self, error: Exception) -> bool:
+        """Return True for transient/rate-limit errors that should be retried."""
+        if isinstance(error, (ServiceRequestError, ServiceResponseError, TimeoutError, requests.Timeout)):
+            return True
+
+        if isinstance(error, HttpResponseError):
+            status_code = getattr(error, "status_code", None)
+            if status_code in {408, 409, 429, 500, 502, 503, 504}:
+                return True
+
+            response = getattr(error, "response", None)
+            if response is not None:
+                try:
+                    status_code = response.status_code
+                except Exception:
+                    pass
+                if status_code in {408, 409, 429, 500, 502, 503, 504}:
+                    return True
+
+        return False
+
+    def _analyze_pdf_with_retry(self, pdf_bytes: bytes, source_name: str):
+        """Call Azure DI with retry/backoff tuned for free-tier throttling."""
+        max_attempts = max(1, int(os.getenv("AZURE_DOC_INTEL_MAX_RETRIES", "6")))
+        base_delay_seconds = max(1.0, float(os.getenv("AZURE_DOC_INTEL_BASE_DELAY_SECONDS", "4")))
+        max_delay_seconds = max(base_delay_seconds, float(os.getenv("AZURE_DOC_INTEL_MAX_DELAY_SECONDS", "60")))
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                poller = self.azure_client.begin_analyze_document(
+                    model_id="prebuilt-layout",
+                    body=pdf_bytes,
+                    content_type="application/pdf",
+                    output_content_format=DocumentContentFormat.MARKDOWN,
+                )
+                return poller.result()
+            except Exception as error:
+                if attempt >= max_attempts or not self._is_retryable_azure_error(error):
+                    raise
+
+                retry_after_seconds = self._get_retry_after_seconds(error)
+                exponential_delay = min(max_delay_seconds, base_delay_seconds * (2 ** (attempt - 1)))
+                jitter = random.uniform(0.0, 1.5)
+                delay_seconds = max(retry_after_seconds or 0.0, exponential_delay + jitter)
+
+                logger.warning(
+                    "Azure DI transient failure for %s (attempt %d/%d): %s. Retrying in %.1f sec",
+                    source_name,
+                    attempt,
+                    max_attempts,
+                    error,
+                    delay_seconds,
+                )
+                sleep(delay_seconds)
     
     def extract_text_from_azure_doc_intelligence(self) -> List[Document]:
         """Extract text and tables from PDF using Azure Document Intelligence.
@@ -681,15 +764,12 @@ class PDFTextExtractor:
     ) -> List[Document]:
         """Extract text from PDF bytes using Azure Document Intelligence."""
         try:
-            poller = self.azure_client.begin_analyze_document(
-                model_id="prebuilt-layout",
-                body=pdf_bytes,
-                content_type="application/pdf",
-                output_content_format=DocumentContentFormat.MARKDOWN,
+            result = self._analyze_pdf_with_retry(
+                pdf_bytes=pdf_bytes,
+                source_name=source_name,
             )
-
-            result = poller.result()
             logger.info(f"Azure analysis complete for {source_name}")
+            source_stem = Path(source_name).stem
             
             # Classify document type
             sample_text = result.content[:1000] if result.content else ""
@@ -699,7 +779,7 @@ class PDFTextExtractor:
                 doc_type = "merit_list"
             
             if doc_type == "merit_list" and self.skip_merit_lists:
-                logger.info(f"Skipping merit list PDF: {path.name}")
+                logger.info(f"Skipping merit list PDF: {source_name}")
                 return []
             
             # Extract metadata from content
@@ -710,7 +790,7 @@ class PDFTextExtractor:
             table_info_by_page: Dict[int, List[Dict]] = {}
             
             if result.tables:
-                logger.info(f"Found {len(result.tables)} tables in {path.name}")
+                logger.info(f"Found {len(result.tables)} tables in {source_name}")
                 for table_idx, table in enumerate(result.tables):
                     # Convert Azure table to list format
                     table_data = self._convert_azure_table_to_list(table)
@@ -729,7 +809,7 @@ class PDFTextExtractor:
                     if is_merit_table and doc_type == "merit_list":
                         csv_path = self.write_merit_table_to_csv(
                             table_data,
-                            path.stem,
+                            source_stem,
                             page_num,
                             table_idx
                         )
@@ -738,7 +818,7 @@ class PDFTextExtractor:
                         schema_key = self.get_table_schema_key(header)
                         csv_path = self.write_table_to_csv(
                             table_data,
-                            path.stem,
+                            source_stem,
                             page_num,
                             table_idx,
                             schema_key

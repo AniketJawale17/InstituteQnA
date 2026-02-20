@@ -67,11 +67,13 @@ class KnowledgeBaseCreation(PDFTextExtractor):
         self.run_root_prefix = os.getenv("AZURE_RUNS_BLOB_PREFIX", "processing_runs")
         self.run_blob_folder = f"{self.run_root_prefix}/{self.run_timestamp}"
         self.checkpoints_blob_folder = f"{self.run_blob_folder}/checkpoints"
+        self.final_processed_blob_folder = f"{self.run_blob_folder}/final_processed"
         self.tables_blob_prefix = f"{self.run_blob_folder}/extraction_processing/tables"
         self._blob_service_client = None
         self._blob_container_client = None
         logger.info("Run blob folder: %s", self.run_blob_folder)
         logger.info("Checkpoints blob folder: %s", self.checkpoints_blob_folder)
+        logger.info("Final processed folder: %s", self.final_processed_blob_folder)
         logger.info("PDF extraction method: %s", self.extraction_method)
         logger.info("Checkpoint run timestamp: %s", self.run_timestamp)
         self._initialize_blob_container()
@@ -163,6 +165,43 @@ class KnowledgeBaseCreation(PDFTextExtractor):
         except Exception as e:
             logger.error("Failed to load checkpoint %s: %s", checkpoint_file, e)
             raise
+
+    def save_final_processed_documents(self, documents: List[Document]) -> str:
+        """Save canonical final processed documents artifact for downstream embedding ingestion."""
+        blob_path = f"{self.final_processed_blob_folder}/final_processed_documents.json"
+        serializable_data = [
+            {"page_content": doc.page_content, "metadata": doc.metadata}
+            for doc in documents
+        ]
+
+        payload = json.dumps(serializable_data, indent=2, ensure_ascii=False).encode("utf-8")
+        blob_client = self._blob_container_client.get_blob_client(blob=blob_path)
+        blob_client.upload_blob(payload, overwrite=True)
+        logger.info(
+            "✅ Final processed document set uploaded: %s/%s (%s docs)",
+            self.azure_blob_container_name,
+            blob_path,
+            len(documents),
+        )
+        return blob_path
+
+    def load_documents_from_blob_path(self, blob_path: str) -> List[Document]:
+        """Load serialized documents from blob path and return LangChain Document objects."""
+        blob_client = self._blob_container_client.get_blob_client(blob=blob_path)
+        payload = blob_client.download_blob().readall().decode("utf-8")
+        data = json.loads(payload)
+        if not isinstance(data, list):
+            raise ValueError(f"Expected list payload at blob path {blob_path}")
+
+        documents = [
+            Document(
+                page_content=item.get("page_content", ""),
+                metadata=item.get("metadata", {}),
+            )
+            for item in data
+        ]
+        logger.info("Loaded %s documents from blob path %s", len(documents), blob_path)
+        return documents
 
     def structure_documents(self, extracted_docs: List[Document]) -> List[Document]:
         if not extracted_docs:

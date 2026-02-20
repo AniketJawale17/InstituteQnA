@@ -27,11 +27,13 @@ try:
     )
     from institute_qna.data_preprocess.vector_store_ingestion import (
         store_documents_in_vector_backend,
+        store_documents_in_vector_backend_from_blob,
     )
     __all__.extend([
         "AzureAISearchVectorStoreManager",
         "upload_documents_to_azure_ai_search",
         "store_documents_in_vector_backend",
+        "store_documents_in_vector_backend_from_blob",
     ])
 except ModuleNotFoundError:
     pass
