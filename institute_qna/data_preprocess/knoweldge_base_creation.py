@@ -65,26 +65,30 @@ def main(
     logger.info("\n" + "="*80)
     logger.info("STEP 1: WEB SCRAPING")
     logger.info("="*80)
-    
+
+
+    # "https://www.coeptech.ac.in/admissions/undergraduate/"
+
+
     urls_to_scrape = [
-        "https://www.coeptech.ac.in/admissions/undergraduate/"
-        ]
-        # "https://www.coeptech.ac.in/about-us/about-university/",
-        # "https://www.coeptech.ac.in/hostel/hostel-admissions/",
-        # "https://www.coeptech.ac.in/hostel/rules-and-regulations/",
-        # "https://www.coeptech.ac.in/student-corner/student-services/student-helpline/",
-        # "https://www.coeptech.ac.in/student-corner/student-clubs/",
-        # "https://www.coeptech.ac.in/facilities/facilities-manager/facilities-for-differently-abled-individuals/",
-        # "https://www.coeptech.ac.in/useful-links/university-sections/",
-        # "https://www.coeptech.ac.in/admissions/undergraduate/first-year-admissions/",
-        # "https://www.coeptech.ac.in/admissions/undergraduate/direct-second-year-admission/",
-        # "https://www.coeptech.ac.in/admissions/undergraduate/working-professional/",
-        # "https://mtech2025.coeptech.ac.in/StaticPages/HomePage",
-        # "https://www.coeptech.ac.in/admissions/post-graduate/",
-        # "https://www.coeptech.ac.in/admissions/ph-d/",
-        # "https://www.coeptech.ac.in/admissions/mba/"
         
-    #  ]
+        
+        "https://www.coeptech.ac.in/about-us/about-university/",
+        "https://www.coeptech.ac.in/hostel/hostel-admissions/",
+        "https://www.coeptech.ac.in/hostel/rules-and-regulations/",
+        "https://www.coeptech.ac.in/student-corner/student-services/student-helpline/",
+        "https://www.coeptech.ac.in/student-corner/student-clubs/",
+        "https://www.coeptech.ac.in/facilities/facilities-manager/facilities-for-differently-abled-individuals/",
+        "https://www.coeptech.ac.in/useful-links/university-sections/",
+        "https://www.coeptech.ac.in/admissions/undergraduate/first-year-admissions/",
+        "https://www.coeptech.ac.in/admissions/undergraduate/direct-second-year-admission/",
+        "https://www.coeptech.ac.in/admissions/undergraduate/working-professional/",
+        "https://mtech2025.coeptech.ac.in/StaticPages/HomePage",
+        "https://www.coeptech.ac.in/admissions/post-graduate/",
+        "https://www.coeptech.ac.in/admissions/ph-d/",
+        "https://www.coeptech.ac.in/admissions/mba/"
+        
+     ]
     
     urls_to_scrape_2 = [
         "https://mitaoe.ac.in/admission.php",
