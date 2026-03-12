@@ -1,12 +1,14 @@
 # APIs for Institute QnA application
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 import os
+import socket
+import uuid
 import uvicorn
 import re
 import time
@@ -17,6 +19,7 @@ from dotenv import load_dotenv
 from institute_qna.data_preprocess.knoweldge_base_creation import main as generate_knowledge_base
 from institute_qna.rag import RAGPipeline
 from institute_qna.logging_config import configure_logging
+from institute_qna.azure_table_storage import QueryAuditTableStore, build_context_summary
 from difflib import SequenceMatcher
 
 load_dotenv()
@@ -88,6 +91,10 @@ _kb_state: Dict[str, Any] = {
 
 
 def _utc_now_iso() -> str:
+    """
+    Returns the current UTC time as an ISO 8601 formatted string using
+    datetime.now(timezone.utc).isoformat().
+    """
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -181,6 +188,7 @@ def _kb_state_snapshot() -> Dict[str, Any]:
 
 # Initialize RAG Pipeline (lazy loading)
 rag_pipeline: Optional[RAGPipeline] = None
+query_audit_store: Optional[QueryAuditTableStore] = None
 
 def get_rag_pipeline() -> RAGPipeline:
     """Get or initialize the RAG pipeline."""
@@ -201,6 +209,14 @@ def get_rag_pipeline() -> RAGPipeline:
             logger.error(f"Failed to initialize RAG Pipeline: {e}")
             raise HTTPException(status_code=500, detail="Failed to initialize RAG system")
     return rag_pipeline
+
+
+def get_query_audit_store() -> QueryAuditTableStore:
+    """Get or initialize Azure Table-backed query audit store."""
+    global query_audit_store
+    if query_audit_store is None:
+        query_audit_store = QueryAuditTableStore()
+    return query_audit_store
 
 
 
@@ -228,6 +244,15 @@ async def knowledge_base_generate_ui() -> HTMLResponse:
     html_path = TEMPLATE_DIR / "knowledge_base_generate.html"
     if not html_path.exists():
         raise HTTPException(status_code=500, detail="Knowledge base UI assets missing.")
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard_ui() -> HTMLResponse:
+    """Serve dashboard UI for query analytics from Azure Table Storage."""
+    html_path = TEMPLATE_DIR / "dashboard.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=500, detail="Dashboard UI assets missing.")
     return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
 
@@ -288,7 +313,7 @@ async def knowledge_base_generate_status() -> dict:
 
 
 @app.post("/query", response_model=QueryResponse)
-async def query_endpoint(request: QueryRequest) -> dict:
+async def query_endpoint(request: QueryRequest, http_request: Request) -> dict:
     """
     Query the RAG system with a question.
     
@@ -298,6 +323,60 @@ async def query_endpoint(request: QueryRequest) -> dict:
     Returns:
         QueryResponse with answer and sources
     """
+    start = time.time()
+    audit_saved = False
+    request_id = http_request.headers.get("x-request-id") or uuid.uuid4().hex
+    x_forwarded_for = (http_request.headers.get("x-forwarded-for") or "").strip()
+    client_ip = x_forwarded_for.split(",")[0].strip() if x_forwarded_for else (
+        http_request.client.host if http_request.client else ""
+    )
+
+    def _save_query_audit(
+        status_code: int,
+        *,
+        answer: str,
+        context: str,
+        num_sources: int,
+        top_k: int,
+        return_sources: bool,
+        error_message: str = "",
+        pipeline: Optional[RAGPipeline] = None,
+    ) -> None:
+        nonlocal audit_saved
+        if audit_saved:
+            return
+        try:
+            llm_handler = getattr(pipeline, "llm_handler", None)
+            metadata = {
+                "processing_ms": int((time.time() - start) * 1000),
+                "num_sources": num_sources,
+                "top_k": top_k,
+                "return_sources": return_sources,
+                "endpoint": str(http_request.url.path),
+                "http_method": http_request.method,
+                "request_id": request_id,
+                "client_ip": client_ip,
+                "user_agent": http_request.headers.get("user-agent", ""),
+                "model_provider": getattr(llm_handler, "provider", ""),
+                "model_name": getattr(llm_handler, "model_name", ""),
+                "environment": os.getenv("APP_ENV", "production"),
+                "host_name": socket.gethostname(),
+                "process_id": os.getpid(),
+                "app_version": app.version,
+                "error_message": error_message,
+                "http_referrer": http_request.headers.get("referer", ""),
+            }
+            get_query_audit_store().save_query(
+                query=request.question,
+                answer=answer,
+                context=context,
+                status_code=status_code,
+                metadata=metadata,
+            )
+            audit_saved = True
+        except Exception as telemetry_error:
+            logger.warning("Failed to save query audit row: %s", telemetry_error)
+
     try:
         pipeline = get_rag_pipeline()
         print("RAG Pipeline obtained successfully", pipeline)
@@ -310,15 +389,55 @@ async def query_endpoint(request: QueryRequest) -> dict:
         )
         
         if "error" in response:
+            _save_query_audit(
+                500,
+                answer=response.get("answer", ""),
+                context=build_context_summary(response),
+                num_sources=int(response.get("num_sources") or 0),
+                top_k=int(request.top_k or 0),
+                return_sources=bool(request.return_sources),
+                error_message=str(response.get("error", "")),
+                pipeline=pipeline,
+            )
             raise HTTPException(status_code=500, detail=response["error"])
+
+        _save_query_audit(
+            200,
+            answer=response.get("answer", ""),
+            context=build_context_summary(response),
+            num_sources=int(response.get("num_sources") or len(response.get("sources") or [])),
+            top_k=int(request.top_k or 0),
+            return_sources=bool(request.return_sources),
+            pipeline=pipeline,
+        )
         
         logger.info(f"Processed query: {request.question[:50]}...")
         return response
         
-    except HTTPException:
+    except HTTPException as e:
+        _save_query_audit(
+            e.status_code,
+            answer="",
+            context="",
+            num_sources=0,
+            top_k=int(request.top_k or 0),
+            return_sources=bool(request.return_sources),
+            error_message=str(e.detail),
+            pipeline=rag_pipeline,
+        )
         raise
     except Exception as e:
-        logger.exception("Error processing query", e)
+        _save_query_audit(
+            500,
+            answer="",
+            context="",
+            num_sources=0,
+            top_k=int(request.top_k or 0),
+            return_sources=bool(request.return_sources),
+            error_message=str(e),
+            pipeline=rag_pipeline,
+        )
+        logger.exception("Error processing query")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -384,6 +503,49 @@ async def ui_meta() -> dict:
         "provider": getattr(llm_handler, "provider", "unknown"),
         "model": getattr(llm_handler, "model_name", "unknown"),
         "top_k": getattr(retriever, "top_k", None),
+    }
+
+
+@app.get("/api/dashboard/query-logs")
+async def query_logs_dashboard_data(limit: int = 200) -> dict:
+    """Return query telemetry rows and summary statistics for dashboard."""
+    if limit < 1 or limit > 1000:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 1000")
+
+    try:
+        rows = get_query_audit_store().fetch_recent_queries(limit=limit)
+    except Exception as e:
+        logger.error("Failed to fetch query dashboard rows: %s", e)
+        raise HTTPException(status_code=500, detail="Unable to load dashboard data")
+
+    total_rows = len(rows)
+    success_count = sum(1 for item in rows if item.get("success"))
+    failed_count = total_rows - success_count
+    avg_answer_chars = round(
+        sum(len((item.get("answer") or "")) for item in rows) / total_rows,
+        2,
+    ) if total_rows else 0
+    avg_context_chars = round(
+        sum(len((item.get("context") or "")) for item in rows) / total_rows,
+        2,
+    ) if total_rows else 0
+    avg_processing_ms = round(
+        sum(int(item.get("processing_ms") or 0) for item in rows) / total_rows,
+        2,
+    ) if total_rows else 0
+
+    return {
+        "summary": {
+            "total_queries": total_rows,
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "success_rate_percent": round((success_count / total_rows) * 100, 2) if total_rows else 0,
+            "avg_answer_chars": avg_answer_chars,
+            "avg_context_chars": avg_context_chars,
+            "avg_processing_ms": avg_processing_ms,
+            "latest_query_time": rows[0].get("created_at") if rows else None,
+        },
+        "rows": rows,
     }
 
 

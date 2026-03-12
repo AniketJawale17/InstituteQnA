@@ -5,40 +5,36 @@ from pathlib import Path
 from typing import Optional
 from datetime import datetime
 import os
+import uuid
 
 try:
-    from azure.storage.blob import BlobServiceClient
+    from azure.data.tables import TableServiceClient
 
-    AZURE_BLOB_AVAILABLE = True
+    AZURE_TABLES_AVAILABLE = True
 except (ModuleNotFoundError, ImportError):
-    AZURE_BLOB_AVAILABLE = False
+    AZURE_TABLES_AVAILABLE = False
 
 
 DEFAULT_LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 DEFAULT_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 
-class AzureBlobLogHandler(logging.Handler):
-    """Logging handler that appends formatted log lines to an Azure Append Blob."""
+class AzureTableLogHandler(logging.Handler):
+    """Logging handler that writes each formatted log record to Azure Table Storage."""
 
-    def __init__(self, connection_string: str, container_name: str, blob_name: str):
+    def __init__(self, connection_string: str, table_name: str, partition_key: str):
         super().__init__()
         self.connection_string = connection_string
-        self.container_name = container_name
-        self.blob_name = blob_name
-        self._append_blob_client: Optional[object] = None
+        self.table_name = table_name
+        self.partition_key = partition_key
+        self._table_client: Optional[object] = None
         self._is_emitting = False
-        self._ensure_append_blob()
+        self._ensure_table()
 
-    def _ensure_append_blob(self) -> None:
-        blob_service_client = BlobServiceClient.from_connection_string(self.connection_string)
-        container_client = blob_service_client.get_container_client(self.container_name)
-        if not container_client.exists():
-            container_client.create_container()
-
-        self._append_blob_client = container_client.get_blob_client(self.blob_name)
-        if not self._append_blob_client.exists():
-            self._append_blob_client.create_append_blob()
+    def _ensure_table(self) -> None:
+        table_service_client = TableServiceClient.from_connection_string(self.connection_string)
+        table_service_client.create_table_if_not_exists(self.table_name)
+        self._table_client = table_service_client.get_table_client(self.table_name)
 
     def emit(self, record: logging.LogRecord) -> None:
         if record.name.startswith("azure."):
@@ -48,55 +44,71 @@ class AzureBlobLogHandler(logging.Handler):
 
         try:
             self._is_emitting = True
-            if self._append_blob_client is None:
-                self._ensure_append_blob()
+            if self._table_client is None:
+                self._ensure_table()
 
             message = self.format(record)
-            payload = (message + "\n").encode("utf-8")
-            self._append_blob_client.append_block(payload)
+            created_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+            row_key = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}-{uuid.uuid4().hex}"
+            entity = {
+                "PartitionKey": self.partition_key,
+                "RowKey": row_key,
+                "LoggedAtUtc": created_at,
+                "LoggerName": record.name,
+                "Level": record.levelname,
+                "Message": message,
+                "Module": record.module,
+                "FunctionName": record.funcName,
+                "LineNumber": record.lineno,
+            }
+            if record.exc_info:
+                entity["Exception"] = self.formatter.formatException(record.exc_info)
+
+            self._table_client.create_entity(entity=entity)
         except Exception:
             self.handleError(record)
         finally:
             self._is_emitting = False
 
 
-def _build_default_blob_name() -> str:
-    run_folder = os.getenv("AZURE_LOGS_RUN_FOLDER") or datetime.now().strftime("%Y%m%d")
-    app_name = os.getenv("AZURE_LOG_APP_NAME", "app")
-    return f"logs/{run_folder}/{app_name}.log"
+def _build_default_logs_table_name() -> str:
+    return os.getenv("AZURE_LOGS_TABLE_NAME", "AppLogs")
 
 
-def _add_blob_logging_handler(level: str) -> None:
-    enabled = os.getenv("ENABLE_BLOB_LOGGING", "false").lower() in {"1", "true", "yes"}
+def _add_table_logging_handler(level: str) -> None:
+    enabled = os.getenv("ENABLE_TABLE_LOGGING", os.getenv("ENABLE_BLOB_LOGGING", "false")).lower() in {"1", "true", "yes"}
     if not enabled:
         return
 
     root_logger = logging.getLogger()
 
-    if not AZURE_BLOB_AVAILABLE:
-        root_logger.warning("ENABLE_BLOB_LOGGING=true but azure-storage-blob is not installed")
+    if not AZURE_TABLES_AVAILABLE:
+        root_logger.warning("Table logging enabled but azure-data-tables is not installed")
         return
 
     connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
     if not connection_string:
-        root_logger.warning("ENABLE_BLOB_LOGGING=true but AZURE_STORAGE_CONNECTION_STRING is missing")
+        root_logger.warning("Table logging enabled but AZURE_STORAGE_CONNECTION_STRING is missing")
         return
 
-    container_name = os.getenv("AZURE_STORAGE_CONTAINER_NAME", "qna-checkpoints")
-    blob_name = os.getenv("AZURE_LOGS_BLOB_NAME", _build_default_blob_name())
+    table_name = _build_default_logs_table_name()
+    partition_key = os.getenv("AZURE_LOGS_PARTITION_KEY", os.getenv("AZURE_LOG_APP_NAME", "InstituteQnA"))
 
     for handler in root_logger.handlers:
-        if isinstance(handler, AzureBlobLogHandler) and handler.blob_name == blob_name:
+        if isinstance(handler, AzureTableLogHandler) and handler.table_name == table_name:
             return
 
-    blob_handler = AzureBlobLogHandler(
-        connection_string=connection_string,
-        container_name=container_name,
-        blob_name=blob_name,
-    )
-    blob_handler.setLevel(level)
-    blob_handler.setFormatter(logging.Formatter(DEFAULT_LOG_FORMAT, DEFAULT_DATEFMT))
-    root_logger.addHandler(blob_handler)
+    try:
+        table_handler = AzureTableLogHandler(
+            connection_string=connection_string,
+            table_name=table_name,
+            partition_key=partition_key,
+        )
+        table_handler.setLevel(level)
+        table_handler.setFormatter(logging.Formatter(DEFAULT_LOG_FORMAT, DEFAULT_DATEFMT))
+        root_logger.addHandler(table_handler)
+    except Exception as e:
+        root_logger.warning("Failed to initialize Azure Table logging handler: %s", e)
 
 
 def configure_logging(
@@ -156,4 +168,4 @@ def configure_logging(
     logging.getLogger("azure").setLevel(azure_http_level)
     logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(azure_http_level)
 
-    _add_blob_logging_handler(lvl)
+    _add_table_logging_handler(lvl)

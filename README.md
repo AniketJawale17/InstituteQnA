@@ -72,6 +72,8 @@ InstituteQnA/
 - `POST /query` - Ask a question
 - `POST /batch_query` - Multiple questions
 - `GET /health` - System health check
+- `GET /dashboard` - Query audit dashboard UI
+- `GET /api/dashboard/query-logs` - Query audit dashboard data (Azure Table Storage)
 - `POST /Extract` - Extract web data
 - `POST /Process` - Process PDF documents
 
