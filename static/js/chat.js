@@ -7,6 +7,10 @@ const statusPill = document.getElementById('status-pill');
 const modelPill = document.getElementById('model-pill');
 const promptGrid = document.getElementById('prompt-grid');
 const autocompleteList = document.getElementById('autocomplete-list');
+const sidebar = document.getElementById('sidebar');
+const sidebarToggle = document.getElementById('sidebar-toggle');
+const sidebarBackdrop = document.getElementById('sidebar-backdrop');
+const clearChatButton = document.getElementById('clear-chat');
 
 let autocompleteTimeout;
 let selectedSuggestionIndex = -1;
@@ -58,14 +62,13 @@ questionInput.addEventListener('input', async (event) => {
   }, 300);
 });
 
-// Keyboard navigation for autocomplete
+// Keyboard navigation for autocomplete + Enter to send
 questionInput.addEventListener('keydown', (event) => {
   const items = autocompleteList.querySelectorAll('.autocomplete-item');
-  
-  if (items.length === 0) return;
-  
+
   switch (event.key) {
     case 'Tab':
+      if (items.length === 0) return;
       event.preventDefault();
       if (selectedSuggestionIndex === -1) {
         highlightSuggestion(0);
@@ -75,6 +78,7 @@ questionInput.addEventListener('keydown', (event) => {
       break;
       
     case 'ArrowDown':
+      if (items.length === 0) return;
       event.preventDefault();
       if (selectedSuggestionIndex < items.length - 1) {
         highlightSuggestion(selectedSuggestionIndex + 1);
@@ -82,6 +86,7 @@ questionInput.addEventListener('keydown', (event) => {
       break;
       
     case 'ArrowUp':
+      if (items.length === 0) return;
       event.preventDefault();
       if (selectedSuggestionIndex > 0) {
         highlightSuggestion(selectedSuggestionIndex - 1);
@@ -89,9 +94,13 @@ questionInput.addEventListener('keydown', (event) => {
       break;
       
     case 'Enter':
-      if (selectedSuggestionIndex !== -1) {
+      if (selectedSuggestionIndex !== -1 && items.length > 0) {
         event.preventDefault();
         selectSuggestion(items[selectedSuggestionIndex].textContent);
+      } else if (!event.shiftKey) {
+        // Default chat UX: Enter sends, Shift+Enter inserts newline.
+        event.preventDefault();
+        chatForm.requestSubmit();
       }
       break;
       
@@ -128,6 +137,55 @@ document.addEventListener('click', (event) => {
     selectedSuggestionIndex = -1;
   }
 });
+
+// Sidebar toggle for mobile/tablet layouts
+function openSidebar() {
+  if (!sidebar) return;
+  sidebar.classList.remove('sidebar--collapsed');
+  if (sidebarBackdrop) {
+    sidebarBackdrop.classList.add('sidebar-backdrop--visible');
+  }
+}
+
+function closeSidebar() {
+  if (!sidebar) return;
+  sidebar.classList.add('sidebar--collapsed');
+  if (sidebarBackdrop) {
+    sidebarBackdrop.classList.remove('sidebar-backdrop--visible');
+  }
+}
+
+function toggleSidebar() {
+  if (!sidebar) return;
+  if (sidebar.classList.contains('sidebar--collapsed')) {
+    openSidebar();
+  } else {
+    closeSidebar();
+  }
+}
+
+if (sidebarToggle) {
+  sidebarToggle.addEventListener('click', toggleSidebar);
+}
+
+if (sidebarBackdrop) {
+  sidebarBackdrop.addEventListener('click', closeSidebar);
+}
+
+if (sidebar && window.matchMedia('(max-width: 768px)').matches) {
+  sidebar.classList.add('sidebar--collapsed');
+}
+
+if (clearChatButton) {
+  clearChatButton.addEventListener('click', () => {
+    const messageNodes = Array.from(chatWindow.querySelectorAll('.message'));
+    messageNodes.forEach((node) => {
+      if (!node.classList.contains('welcome-message')) {
+        node.remove();
+      }
+    });
+  });
+}
 
 function appendMessage(role, text, sources) {
   const message = document.createElement('div');

@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <style>
     :root {
       --bg-1: #f4f7f2;
@@ -16,7 +17,11 @@
       --card: #ffffff;
       --accent: #0f766e;
       --accent-soft: #ccfbf1;
-      --danger: #9f1239;
+      --success: #16a34a;
+      --success-soft: #dcfce7;
+      --danger: #dc2626;
+      --danger-soft: #fee2e2;
+      --warn: #d97706;
       --border: #d9e4dd;
       --shadow: 0 20px 50px rgba(25, 45, 35, 0.12);
     }
@@ -36,7 +41,7 @@
     }
 
     .layout {
-      max-width: 1200px;
+      max-width: 1300px;
       margin: 0 auto;
       background: rgba(255, 255, 255, 0.72);
       border: 1px solid rgba(255, 255, 255, 0.6);
@@ -46,8 +51,9 @@
       backdrop-filter: blur(6px);
     }
 
+    /* ── Header ── */
     .header {
-      padding: 24px;
+      padding: 20px 24px;
       border-bottom: 1px solid var(--border);
       display: flex;
       justify-content: space-between;
@@ -58,34 +64,96 @@
 
     .title {
       margin: 0;
-      font-size: clamp(1.5rem, 4vw, 2rem);
+      font-size: clamp(1.3rem, 3vw, 1.8rem);
       line-height: 1.1;
       font-weight: 800;
       letter-spacing: -0.02em;
     }
 
     .subtitle {
-      margin: 6px 0 0;
+      margin: 4px 0 0;
       color: var(--muted);
-      font-size: 0.95rem;
+      font-size: 0.88rem;
     }
+
+    .header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+    .nav-link {
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      border-radius: 10px;
+      padding: 8px 14px;
+      font-family: 'Manrope', sans-serif;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
+    }
+    .nav-link:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 
     .btn {
       border: 1px solid var(--accent);
       background: var(--accent);
       color: white;
-      border-radius: 12px;
-      padding: 10px 16px;
+      border-radius: 10px;
+      padding: 9px 16px;
+      font-family: 'Manrope', sans-serif;
+      font-size: 0.88rem;
       font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.15s;
+    }
+    .btn:hover { background: #0d6560; }
+
+    .auto-refresh {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.82rem;
+      color: var(--muted);
+      font-weight: 600;
       cursor: pointer;
     }
 
-    .content {
-      padding: 20px;
-      display: grid;
-      gap: 16px;
+    .toggle { position: relative; width: 36px; height: 20px; flex-shrink: 0; }
+    .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+    .toggle-track {
+      position: absolute; inset: 0;
+      background: #d1d5db;
+      border-radius: 20px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .toggle input:checked + .toggle-track { background: var(--accent); }
+    .toggle-track::after {
+      content: '';
+      position: absolute;
+      top: 2px; left: 2px;
+      width: 16px; height: 16px;
+      background: white;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+    .toggle input:checked + .toggle-track::after { transform: translateX(16px); }
+
+    .last-updated {
+      font-size: 0.78rem;
+      color: var(--muted);
+      font-family: 'IBM Plex Mono', monospace;
     }
 
+    /* ── Layout ── */
+    .content { padding: 20px; display: grid; gap: 20px; }
+
+    /* ── KPI Cards ── */
     .cards {
       display: grid;
       grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -97,23 +165,96 @@
       border: 1px solid var(--border);
       border-radius: 16px;
       padding: 16px;
+      position: relative;
+      overflow: hidden;
     }
 
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: var(--card-accent, var(--accent));
+      border-radius: 16px 16px 0 0;
+    }
+
+    .card-icon { font-size: 1.3rem; margin-bottom: 8px; display: block; }
+
     .card-label {
-      font-size: 0.78rem;
+      font-size: 0.73rem;
       text-transform: uppercase;
       letter-spacing: 0.07em;
       color: var(--muted);
-      margin: 0 0 10px;
+      margin: 0 0 6px;
+      font-weight: 700;
     }
 
     .card-value {
       margin: 0;
       font-family: 'IBM Plex Mono', monospace;
-      font-size: 1.4rem;
+      font-size: 1.5rem;
       color: var(--ink);
+      font-weight: 500;
     }
 
+    .card-delta { font-size: 0.72rem; margin-top: 4px; color: var(--muted); }
+
+    /* ── Charts ── */
+    .charts-row {
+      display: grid;
+      grid-template-columns: 1fr 2fr 2fr;
+      gap: 16px;
+    }
+
+    .chart-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 18px;
+    }
+
+    .chart-title {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      font-weight: 700;
+      margin: 0 0 14px;
+    }
+
+    /* ── Filters ── */
+    .filters {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .filter-label { font-size: 0.82rem; font-weight: 700; color: var(--muted); }
+
+    .filter-select, .filter-input {
+      border: 1px solid var(--border);
+      background: var(--card);
+      border-radius: 10px;
+      padding: 7px 12px;
+      font-family: 'Manrope', sans-serif;
+      font-size: 0.85rem;
+      color: var(--ink);
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .filter-select:focus, .filter-input:focus { border-color: var(--accent); }
+    .filter-input { min-width: 220px; }
+    .filter-input::placeholder { color: #9cad9a; }
+
+    .row-count {
+      margin-left: auto;
+      font-size: 0.8rem;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    /* ── Table ── */
     .table-wrap {
       background: var(--card);
       border: 1px solid var(--border);
@@ -121,196 +262,588 @@
       overflow: auto;
     }
 
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      min-width: 1300px;
-    }
+    table { width: 100%; border-collapse: collapse; min-width: 860px; }
 
     thead th {
       text-align: left;
-      font-size: 0.8rem;
+      font-size: 0.73rem;
       color: var(--muted);
       text-transform: uppercase;
       letter-spacing: 0.05em;
-      padding: 14px;
+      padding: 12px 14px;
       border-bottom: 1px solid var(--border);
       background: #f6faf8;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
     }
+    thead th:hover { color: var(--accent); }
+    thead th .sort-ind { margin-left: 4px; opacity: 0.45; }
+    thead th.sort-active .sort-ind { opacity: 1; color: var(--accent); }
+
+    tbody tr { cursor: pointer; transition: background 0.1s; }
+    tbody tr:hover { background: #f0f7f4; }
+    tbody tr.expanded { background: #ebf5f1; }
 
     tbody td {
       vertical-align: top;
-      padding: 14px;
+      padding: 11px 14px;
       border-bottom: 1px solid #eef3ef;
-      font-size: 0.95rem;
+      font-size: 0.88rem;
       line-height: 1.4;
     }
 
-    .mono {
-      font-family: 'IBM Plex Mono', monospace;
-      color: #38504a;
-      font-size: 0.82rem;
+    /* Expand row */
+    .expand-row td { background: #f6fdfb; padding: 0; border-bottom: 2px solid var(--border); }
+    .expand-content {
+      padding: 16px 20px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
     }
+    .expand-section h4 {
+      margin: 0 0 6px;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+    .expand-section pre {
+      margin: 0;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.78rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.5;
+      max-height: 180px;
+      overflow-y: auto;
+      background: #edf7f4;
+      padding: 10px 12px;
+      border-radius: 8px;
+      color: #2d4a40;
+    }
+    .expand-section pre.err-pre { background: #fee2e2; color: #991b1b; }
+
+    /* Misc */
+    .mono { font-family: 'IBM Plex Mono', monospace; color: #38504a; font-size: 0.82rem; }
 
     .truncate {
-      max-width: 340px;
+      max-width: 260px;
       white-space: pre-wrap;
       word-break: break-word;
       display: -webkit-box;
-      line-clamp: 4;
-      -webkit-line-clamp: 4;
+      line-clamp: 3;
+      -webkit-line-clamp: 3;
       -webkit-box-orient: vertical;
       overflow: hidden;
     }
 
-    .error {
-      color: var(--danger);
-      font-weight: 600;
+    .badge {
+      display: inline-block;
+      border-radius: 6px;
+      padding: 2px 8px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+    }
+    .badge-ok  { background: var(--success-soft); color: var(--success); }
+    .badge-err { background: var(--danger-soft);  color: var(--danger);  }
+
+    .latency-bar { display: flex; align-items: center; gap: 6px; }
+    .latency-fill {
+      height: 4px;
+      border-radius: 2px;
+      background: var(--accent);
+      min-width: 3px;
     }
 
-    @media (max-width: 1000px) {
-      .cards {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-    }
+    .err-snippet { color: var(--danger); font-size: 0.78rem; font-weight: 600; max-width: 180px; }
 
-    @media (max-width: 640px) {
+    .no-data { text-align: center; padding: 40px; color: var(--muted); font-size: 0.9rem; }
+
+    .alert { padding: 10px 16px; border-radius: 10px; font-size: 0.88rem; font-weight: 600; border: 1px solid; }
+    .alert-danger { background: var(--danger-soft); border-color: #fca5a5; color: var(--danger); }
+
+    /* ── Responsive ── */
+    @media (max-width: 1100px) {
+      .cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .charts-row { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 700px) {
+      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       body { padding: 10px; }
       .header { padding: 16px; }
       .content { padding: 12px; }
-      .cards {
-        grid-template-columns: 1fr;
-      }
+    }
+    @media (max-width: 440px) {
+      .cards { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
   <div class="layout">
+
+    <!-- ── Header ── -->
     <section class="header">
       <div>
         <h1 class="title">Query Audit Dashboard</h1>
-        <p class="subtitle">Live analytics from Azure Table Storage</p>
+        <p class="subtitle">Live analytics &bull; Azure Table Storage</p>
       </div>
-      <button class="btn" id="refresh">Refresh</button>
+      <div class="header-actions">
+        <a href="/chat" class="nav-link">💬 Chat</a>
+        <a href="/knowledge_base/generate" class="nav-link">🔧 KB Generate</a>
+        <label class="auto-refresh">
+          <span class="toggle">
+            <input type="checkbox" id="autoRefreshToggle" />
+            <span class="toggle-track"></span>
+          </span>
+          Auto
+        </label>
+        <button class="btn" id="refresh">↻ Refresh</button>
+      </div>
     </section>
 
     <section class="content">
+
+      <!-- Status bar -->
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <span class="last-updated" id="lastUpdated">Not yet loaded</span>
+        <div id="errorBanner"></div>
+      </div>
+
+      <!-- ── KPI Cards ── -->
       <div class="cards">
-        <div class="card">
+        <div class="card" style="--card-accent:#0f766e">
+          <span class="card-icon">📊</span>
           <p class="card-label">Total Queries</p>
-          <p class="card-value" id="totalQueries">0</p>
+          <p class="card-value" id="totalQueries">—</p>
         </div>
-        <div class="card">
-          <p class="card-label">Avg Answer Chars</p>
-          <p class="card-value" id="avgAnswer">0</p>
+        <div class="card" style="--card-accent:#16a34a">
+          <span class="card-icon">✅</span>
+          <p class="card-label">Successful</p>
+          <p class="card-value" id="successCount">—</p>
+          <p class="card-delta" id="successRate"></p>
         </div>
-        <div class="card">
-          <p class="card-label">Avg Context Chars</p>
-          <p class="card-value" id="avgContext">0</p>
+        <div class="card" style="--card-accent:#dc2626">
+          <span class="card-icon">❌</span>
+          <p class="card-label">Failed</p>
+          <p class="card-value" id="failedCount">—</p>
+          <p class="card-delta" id="failedRate"></p>
         </div>
-        <div class="card">
-          <p class="card-label">Latest Query Time</p>
-          <p class="card-value mono" id="latestTime">-</p>
+        <div class="card" style="--card-accent:#d97706">
+          <span class="card-icon">⚡</span>
+          <p class="card-label">Avg Latency</p>
+          <p class="card-value" id="avgLatency">—</p>
+          <p class="card-delta">milliseconds</p>
         </div>
-        <div class="card">
-          <p class="card-label">Success Rate</p>
-          <p class="card-value" id="successRate">0%</p>
+        <div class="card" style="--card-accent:#7c3aed">
+          <span class="card-icon">📚</span>
+          <p class="card-label">Avg Sources</p>
+          <p class="card-value" id="avgSources">—</p>
+          <p class="card-delta">per query</p>
         </div>
-        <div class="card">
-          <p class="card-label">Avg Latency (ms)</p>
-          <p class="card-value" id="avgLatency">0</p>
+        <div class="card" style="--card-accent:#0284c7">
+          <span class="card-icon">🌐</span>
+          <p class="card-label">Unique IPs</p>
+          <p class="card-value" id="uniqueIPs">—</p>
+          <p class="card-delta" id="latestQueryTime">Latest: —</p>
         </div>
       </div>
 
-      <div id="error" class="error"></div>
+      <!-- ── Charts ── -->
+      <div class="charts-row">
+        <div class="chart-card">
+          <p class="chart-title">Success / Failed</p>
+          <div style="position:relative;height:160px;">
+            <canvas id="donutChart"></canvas>
+          </div>
+        </div>
+        <div class="chart-card">
+          <p class="chart-title">Queries per Hour (Last 24 h)</p>
+          <div style="position:relative;height:160px;">
+            <canvas id="barChart"></canvas>
+          </div>
+        </div>
+        <div class="chart-card">
+          <p class="chart-title">Latency Trend (Last 30 Queries)</p>
+          <div style="position:relative;height:160px;">
+            <canvas id="lineChart"></canvas>
+          </div>
+        </div>
+      </div>
 
+      <!-- ── Filters ── -->
+      <div class="filters">
+        <span class="filter-label">Filter:</span>
+        <select class="filter-select" id="filterStatus">
+          <option value="all">All Status</option>
+          <option value="success">Success only</option>
+          <option value="error">Errors only</option>
+        </select>
+        <select class="filter-select" id="filterModel">
+          <option value="all">All Models</option>
+        </select>
+        <input type="text" class="filter-input" id="filterSearch" placeholder="Search queries, answers, errors…" />
+        <span class="row-count" id="rowCount"></span>
+      </div>
+
+      <!-- ── Table ── -->
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Date Time (UTC)</th>
-              <th>Status</th>
-              <th>Latency (ms)</th>
-              <th>Request Id</th>
-              <th>Client IP</th>
-              <th>Model</th>
-              <th>Query</th>
-              <th>Answer</th>
-              <th>Context</th>
+              <th data-col="created_at">Time <span class="sort-ind">↕</span></th>
+              <th data-col="status_code">Status <span class="sort-ind">↕</span></th>
+              <th data-col="processing_ms">Latency <span class="sort-ind">↕</span></th>
+              <th data-col="model">Model</th>
+              <th data-col="num_sources">Sources <span class="sort-ind">↕</span></th>
+              <th data-col="query">Query</th>
+              <th data-col="error_message">Error</th>
             </tr>
           </thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
+
+      <p style="font-size:0.75rem;color:var(--muted);text-align:center;margin:4px 0 0;">
+        Click any row to expand the full answer, context, and error detail.
+      </p>
+
     </section>
   </div>
 
   <script>
-    const rowsEl = document.getElementById('rows');
-    const totalQueriesEl = document.getElementById('totalQueries');
-    const avgAnswerEl = document.getElementById('avgAnswer');
-    const avgContextEl = document.getElementById('avgContext');
-    const latestTimeEl = document.getElementById('latestTime');
-    const successRateEl = document.getElementById('successRate');
-    const avgLatencyEl = document.getElementById('avgLatency');
-    const refreshBtn = document.getElementById('refresh');
-    const errorEl = document.getElementById('error');
+    // ── State ─────────────────────────────────────────────────────────────────
+    let allRows = [];
+    let maxLatency = 1;
+    let donutChart, barChart, lineChart;
+    let autoRefreshInterval = null;
+    let sortCol = 'created_at';
+    let sortDir = -1; // -1 = desc
 
+    // ── DOM refs ──────────────────────────────────────────────────────────────
+    const rowsEl        = document.getElementById('rows');
+    const rowCountEl    = document.getElementById('rowCount');
+    const errorBannerEl = document.getElementById('errorBanner');
+    const lastUpdatedEl = document.getElementById('lastUpdated');
+    const filterStatus  = document.getElementById('filterStatus');
+    const filterModel   = document.getElementById('filterModel');
+    const filterSearch  = document.getElementById('filterSearch');
+    const autoRefToggle = document.getElementById('autoRefreshToggle');
+    const refreshBtn    = document.getElementById('refresh');
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
     function escapeHtml(input) {
-      return String(input || '')
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
+      return String(input ?? '')
+        .replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;').replaceAll('"', '&quot;')
         .replaceAll("'", '&#39;');
     }
 
-    function renderRows(rows) {
-      if (!rows || rows.length === 0) {
-        rowsEl.innerHTML = '<tr><td colspan="9">No query rows found in Azure Table yet.</td></tr>';
+    function fmtTime(iso) {
+      if (!iso) return '—';
+      try {
+        const d = new Date(iso);
+        return d.toLocaleString(undefined, { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+      } catch { return iso; }
+    }
+
+    // ── Chart init ────────────────────────────────────────────────────────────
+    function initCharts() {
+      donutChart = new Chart(document.getElementById('donutChart'), {
+        type: 'doughnut',
+        data: {
+          labels: ['Success', 'Failed'],
+          datasets: [{
+            data: [0, 0],
+            backgroundColor: ['#16a34a', '#dc2626'],
+            borderWidth: 0,
+            hoverOffset: 4,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          cutout: '68%',
+          plugins: {
+            legend: { position: 'bottom', labels: { font: { family: 'Manrope', size: 11 }, padding: 8 } },
+          },
+        },
+      });
+
+      barChart = new Chart(document.getElementById('barChart'), {
+        type: 'bar',
+        data: {
+          labels: [],
+          datasets: [{
+            label: 'Queries',
+            data: [],
+            backgroundColor: 'rgba(15,118,110,0.72)',
+            borderRadius: 4,
+            borderSkipped: false,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { font: { family: 'IBM Plex Mono', size: 10 }, maxTicksLimit: 12 }, grid: { display: false } },
+            y: { ticks: { font: { family: 'IBM Plex Mono', size: 10 }, stepSize: 1 }, beginAtZero: true },
+          },
+        },
+      });
+
+      lineChart = new Chart(document.getElementById('lineChart'), {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [{
+            label: 'ms',
+            data: [],
+            borderColor: '#d97706',
+            backgroundColor: 'rgba(217,119,6,0.08)',
+            fill: true,
+            tension: 0.35,
+            pointRadius: 3,
+            pointBackgroundColor: '#d97706',
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { font: { family: 'IBM Plex Mono', size: 9 }, maxTicksLimit: 8 }, grid: { display: false } },
+            y: { ticks: { font: { family: 'IBM Plex Mono', size: 10 } }, beginAtZero: true },
+          },
+        },
+      });
+    }
+
+    function updateCharts(summary, rows) {
+      // Donut
+      donutChart.data.datasets[0].data = [summary.success_count || 0, summary.failed_count || 0];
+      donutChart.update('none');
+
+      // Bar – queries per hour over last 24 h
+      const now = Date.now();
+      const buckets = {};
+      for (let i = 23; i >= 0; i--) {
+        const d = new Date(now - i * 3_600_000);
+        buckets[`${String(d.getHours()).padStart(2, '0')}h`] = 0;
+      }
+      rows.forEach(r => {
+        if (!r.created_at) return;
+        const d = new Date(r.created_at);
+        if (now - d.getTime() > 24 * 3_600_000) return;
+        const key = `${String(d.getHours()).padStart(2, '0')}h`;
+        if (key in buckets) buckets[key]++;
+      });
+      barChart.data.labels = Object.keys(buckets);
+      barChart.data.datasets[0].data = Object.values(buckets);
+      barChart.update('none');
+
+      // Line – last 30 queries latency (chronological)
+      const sorted = [...rows].sort((a, b) =>
+        (a.created_at || '') < (b.created_at || '') ? -1 : 1
+      );
+      const last30 = sorted.slice(-30);
+      lineChart.data.labels = last30.map(r => fmtTime(r.created_at));
+      lineChart.data.datasets[0].data = last30.map(r => r.processing_ms || 0);
+      lineChart.update('none');
+    }
+
+    // ── KPI update ────────────────────────────────────────────────────────────
+    function updateKPIs(summary, rows) {
+      document.getElementById('totalQueries').textContent = summary.total_queries ?? '—';
+      document.getElementById('successCount').textContent = summary.success_count ?? '—';
+      document.getElementById('failedCount').textContent  = summary.failed_count  ?? '—';
+
+      const sp = summary.success_rate_percent ?? null;
+      document.getElementById('successRate').textContent = sp !== null ? `${sp}% of total` : '';
+      document.getElementById('failedRate').textContent  = sp !== null ? `${(100 - sp).toFixed(2)}% of total` : '';
+
+      document.getElementById('avgLatency').textContent = summary.avg_processing_ms ?? '—';
+
+      const avgSrc = rows.length
+        ? (rows.reduce((s, r) => s + (r.num_sources || 0), 0) / rows.length).toFixed(1)
+        : '—';
+      document.getElementById('avgSources').textContent = avgSrc;
+
+      const uniqueIPs = new Set(rows.map(r => r.client_ip).filter(Boolean)).size;
+      document.getElementById('uniqueIPs').textContent = uniqueIPs || '—';
+      document.getElementById('latestQueryTime').textContent = `Latest: ${fmtTime(summary.latest_query_time)}`;
+    }
+
+    // ── Model filter ──────────────────────────────────────────────────────────
+    function populateModelFilter(rows) {
+      const models = [...new Set(
+        rows.map(r => `${r.model_provider || '?'} / ${r.model_name || '?'}`)
+      )];
+      const current = filterModel.value;
+      filterModel.innerHTML = '<option value="all">All Models</option>';
+      models.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m; opt.textContent = m;
+        filterModel.appendChild(opt);
+      });
+      if (models.includes(current)) filterModel.value = current;
+    }
+
+    // ── Filter + sort ─────────────────────────────────────────────────────────
+    function getFilteredRows() {
+      const status = filterStatus.value;
+      const model  = filterModel.value;
+      const search = filterSearch.value.trim().toLowerCase();
+      return allRows.filter(r => {
+        if (status === 'success' && !r.success) return false;
+        if (status === 'error'   &&  r.success) return false;
+        const mKey = `${r.model_provider || '?'} / ${r.model_name || '?'}`;
+        if (model !== 'all' && mKey !== model) return false;
+        if (search && !`${r.query} ${r.answer} ${r.error_message}`.toLowerCase().includes(search)) return false;
+        return true;
+      });
+    }
+
+    function sortedRows(rows) {
+      return [...rows].sort((a, b) => {
+        let va = sortCol === 'model'
+          ? `${a.model_provider}/${a.model_name}`
+          : a[sortCol];
+        let vb = sortCol === 'model'
+          ? `${b.model_provider}/${b.model_name}`
+          : b[sortCol];
+        va = va ?? ''; vb = vb ?? '';
+        return (typeof va === 'number' ? (va - vb) : String(va).localeCompare(String(vb))) * sortDir;
+      });
+    }
+
+    // ── Render table ──────────────────────────────────────────────────────────
+    function renderRows() {
+      const filtered = sortedRows(getFilteredRows());
+      rowCountEl.textContent = `${filtered.length} row${filtered.length !== 1 ? 's' : ''}`;
+
+      if (!filtered.length) {
+        rowsEl.innerHTML = `<tr><td colspan="7" class="no-data">No records match the current filters.</td></tr>`;
         return;
       }
 
-      rowsEl.innerHTML = rows.map((row) => `
-        <tr>
-          <td class="mono">${escapeHtml(row.created_at || '-')}</td>
-          <td class="mono">${escapeHtml(row.status_code || '-')}</td>
-          <td class="mono">${escapeHtml(row.processing_ms || 0)}</td>
-          <td class="mono">${escapeHtml(row.request_id || '-')}</td>
-          <td class="mono">${escapeHtml(row.client_ip || '-')}</td>
-          <td class="mono">${escapeHtml((row.model_provider || '-') + ' / ' + (row.model_name || '-'))}</td>
+      rowsEl.innerHTML = '';
+      filtered.forEach(row => {
+        const latW = Math.min(60, Math.round((row.processing_ms / maxLatency) * 60));
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="mono">${escapeHtml(fmtTime(row.created_at))}</td>
+          <td>
+            <span class="badge ${row.success ? 'badge-ok' : 'badge-err'}">
+              ${escapeHtml(String(row.status_code || (row.success ? 200 : 500)))}
+            </span>
+          </td>
+          <td>
+            <div class="latency-bar">
+              <span class="mono">${escapeHtml(String(row.processing_ms || 0))}</span>
+              <div class="latency-fill" style="width:${latW}px"></div>
+            </div>
+          </td>
+          <td class="mono">${escapeHtml((row.model_provider || '—') + ' / ' + (row.model_name || '—'))}</td>
+          <td class="mono">${escapeHtml(String(row.num_sources ?? '—'))}</td>
           <td><div class="truncate">${escapeHtml(row.query)}</div></td>
-          <td><div class="truncate">${escapeHtml(row.answer)}</div></td>
-          <td><div class="truncate">${escapeHtml(row.context)}</div></td>
-        </tr>
-      `).join('');
+          <td>
+            ${row.error_message
+              ? `<span class="err-snippet">${escapeHtml(row.error_message.slice(0, 80))}</span>`
+              : `<span style="color:#9cad9a;font-size:0.78rem;">—</span>`}
+          </td>
+        `;
+        tr.addEventListener('click', () => toggleExpand(tr, row));
+        rowsEl.appendChild(tr);
+      });
     }
 
+    function toggleExpand(tr, row) {
+      const next = tr.nextSibling;
+      if (next && next.classList.contains('expand-row')) {
+        next.remove();
+        tr.classList.remove('expanded');
+        return;
+      }
+      tr.classList.add('expanded');
+      const expTr = document.createElement('tr');
+      expTr.className = 'expand-row';
+      expTr.innerHTML = `
+        <td colspan="7">
+          <div class="expand-content">
+            <div class="expand-section">
+              <h4>Answer</h4>
+              <pre>${escapeHtml(row.answer || '(empty)')}</pre>
+            </div>
+            <div class="expand-section">
+              <h4>Context / Sources</h4>
+              <pre>${escapeHtml(row.context || '(empty)')}</pre>
+            </div>
+            ${row.error_message ? `
+            <div class="expand-section" style="grid-column:1/-1">
+              <h4>Error Detail</h4>
+              <pre class="err-pre">${escapeHtml(row.error_message)}</pre>
+            </div>` : ''}
+          </div>
+        </td>
+      `;
+      tr.after(expTr);
+    }
+
+    // ── Load data ─────────────────────────────────────────────────────────────
     async function loadDashboardData() {
-      errorEl.textContent = '';
+      errorBannerEl.innerHTML = '';
       try {
-        const response = await fetch('/api/dashboard/query-logs?limit=200');
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
+        const resp = await fetch('/api/dashboard/query-logs?limit=200');
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
         const summary = data.summary || {};
-
-        totalQueriesEl.textContent = String(summary.total_queries || 0);
-        avgAnswerEl.textContent = String(summary.avg_answer_chars || 0);
-        avgContextEl.textContent = String(summary.avg_context_chars || 0);
-        latestTimeEl.textContent = summary.latest_query_time || '-';
-        successRateEl.textContent = `${String(summary.success_rate_percent || 0)}%`;
-        avgLatencyEl.textContent = String(summary.avg_processing_ms || 0);
-
-        renderRows(data.rows || []);
-      } catch (error) {
-        errorEl.textContent = `Failed to load dashboard data: ${error.message}`;
+        allRows = data.rows || [];
+        maxLatency = Math.max(1, ...allRows.map(r => r.processing_ms || 0));
+        updateKPIs(summary, allRows);
+        populateModelFilter(allRows);
+        updateCharts(summary, allRows);
+        renderRows();
+        lastUpdatedEl.textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
+      } catch (err) {
+        errorBannerEl.innerHTML = `<div class="alert alert-danger">Failed to load data: ${escapeHtml(err.message)}</div>`;
       }
     }
 
+    // ── Sort headers ──────────────────────────────────────────────────────────
+    document.querySelectorAll('thead th[data-col]').forEach(th => {
+      th.addEventListener('click', () => {
+        const col = th.dataset.col;
+        if (sortCol === col) sortDir *= -1; else { sortCol = col; sortDir = -1; }
+        document.querySelectorAll('thead th').forEach(h => h.classList.remove('sort-active'));
+        th.classList.add('sort-active');
+        const ind = th.querySelector('.sort-ind');
+        if (ind) ind.textContent = sortDir === -1 ? '↓' : '↑';
+        renderRows();
+      });
+    });
+
+    // ── Filter events ─────────────────────────────────────────────────────────
+    filterStatus.addEventListener('change', renderRows);
+    filterModel.addEventListener('change', renderRows);
+    filterSearch.addEventListener('input', renderRows);
+
+    // ── Auto-refresh ──────────────────────────────────────────────────────────
+    autoRefToggle.addEventListener('change', () => {
+      if (autoRefToggle.checked) {
+        autoRefreshInterval = setInterval(loadDashboardData, 30_000);
+      } else {
+        clearInterval(autoRefreshInterval);
+        autoRefreshInterval = null;
+      }
+    });
+
     refreshBtn.addEventListener('click', loadDashboardData);
+
+    // ── Boot ──────────────────────────────────────────────────────────────────
+    initCharts();
     loadDashboardData();
   </script>
 </body>
